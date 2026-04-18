@@ -91,17 +91,29 @@ def _fig_json(fig):
     """Serialize Plotly figure to JSON-serialisable dict."""
     return json.loads(fig.to_json())
 
+def _safe_val(v):
+    """Convert any NaN/inf/numpy scalar to a JSON-safe Python value."""
+    if hasattr(v, "item"):          # numpy scalar → Python native
+        v = v.item()
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return None
+    return v
+
+def _sanitize(obj):
+    """Recursively replace NaN/inf with None throughout any nested structure."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return _safe_val(obj)
+
 def _clean_records(df):
     """Convert DataFrame to JSON-safe list of dicts — NaN/inf become None."""
-    def _safe(v):
-        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-            return None
-        if hasattr(v, "item"):          # numpy scalar
-            v = v.item()
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                return None
-        return v
-    return [{k: _safe(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
+    return _sanitize(df.to_dict(orient="records"))
+
+def _safe_jsonify(payload):
+    """jsonify with full NaN/inf sanitisation."""
+    return jsonify(_sanitize(payload))
 
 def _layout(**kw):
     return dict(template=DARK, margin=dict(l=10,r=10,t=40,b=10),
@@ -1129,7 +1141,8 @@ def api_abm_run():
                                     height=320))
 
     avg_rec = rt["Recovery_Week"].dropna()
-    return jsonify({
+    avg_rec_mean = avg_rec.mean() if len(avg_rec) else float("nan")
+    return _safe_jsonify({
         "inventory_chart": _fig_json(_ts(inv,    "Inventory Levels (ABM)",     "Inventory (norm.)")),
         "shortage_chart":  _fig_json(_ts(short,  "Supply Shortages (ABM)",     "Shortage (norm.)")),
         "orders_chart":    _fig_json(_ts(orders, "Order Volumes (ABM)",        "Orders (norm.)")),
@@ -1144,7 +1157,7 @@ def api_abm_run():
         "summary": {
             "total_shortage": float(short.sum()),
             "avg_service":    float(sl["Service_Level_%"].mean()),
-            "avg_recovery":   f"{avg_rec.mean():.1f} wks" if len(avg_rec) and not math.isnan(avg_rec.mean()) else "—",
+            "avg_recovery":   f"{avg_rec_mean:.1f} wks" if not math.isnan(avg_rec_mean) else "—",
             "max_bullwhip":   float(bw["Bullwhip_Ratio"].max()) if not bw.empty else 0.0,
         },
     })
