@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}CGE Analysis{% endblock %}
+{% set active = "cge" %}
+{% block page_title %}CGE Price & Trade Analysis{% endblock %}
+{% block page_subtitle %}Armington CES equilibrium · Geographic risk · Trade substitution dynamics{% endblock %}
+{% block content %}
+<body data-page="cge">
+
+<div id="cge-tabs" data-tabs>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-cge-risk">🌍 Geographic Risk</button>
+    <button class="tab-btn" data-tab="tab-cge-eq">⚖️ Equilibrium Analysis</button>
+    <button class="tab-btn" data-tab="tab-cge-sub">🔄 Substitution</button>
+  </div>
+
+  <!-- Geographic Risk & HHI -->
+  <div id="tab-cge-risk" class="tab-pane active">
+    <div class="info-box">
+      HHI &gt; 2500 = highly concentrated sourcing. Geographic Risk Score combines HHI,
+      China share and Armington substitution elasticity σ — low σ means harder to switch supplier.
+    </div>
+    <div class="two-col">
+      <div class="chart-box">
+        <div class="chart-title">Herfindahl-Hirschman Index</div>
+        <div id="chart-cge-hhi" style="height:360px">
+          <div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div>
+        </div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title">Geographic Concentration Risk</div>
+        <div id="chart-cge-risk" style="height:360px"></div>
+      </div>
+    </div>
+    <div class="two-col">
+      <div>
+        <div class="card-title" style="margin:12px 0 8px">HHI Detail</div>
+        <div id="table-cge-hhi"></div>
+      </div>
+      <div>
+        <div class="card-title" style="margin:12px 0 8px">Risk Scores</div>
+        <div id="table-cge-risk"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Equilibrium Analysis -->
+  <div id="tab-cge-eq" class="tab-pane">
+    <div class="card">
+      <div class="card-title">Configure Supply Shock</div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1;min-width:220px">
+          <label>Sector Shocks (supply reduction %)</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+            {% for s in sectors %}{% set i = loop.index0 %}
+            <label style="font-size:.78rem;display:flex;align-items:center;gap:6px;color:var(--text)">
+              <input type="number" class="form-control cge-shock-input"
+                     data-sector="{{ i }}" min="-100" max="100" value="0"
+                     style="width:70px;padding:3px 6px;font-size:.78rem">
+              {{ sector_short.get(s, s) }}
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="form-group" style="min-width:200px">
+          <label>Tariff Override (optional)</label>
+          <select id="cge-tariff-sector" class="form-control" style="margin-bottom:6px">
+            <option value="">— none —</option>
+            {% for s in sectors %}
+            <option value="{{ s }}">{{ sector_short.get(s, s) }}</option>
+            {% endfor %}
+          </select>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="number" id="cge-tariff-rate" class="form-control" min="0" max="200" value="0" step="5" style="width:80px">
+            <span style="font-size:.82rem;color:var(--text-muted)">% tariff rate</span>
+          </div>
+        </div>
+        <div class="form-group" style="justify-content:flex-end">
+          <button id="btn-cge-eq" class="btn-primary-custom">
+            <i class="fa fa-calculator"></i> Run Equilibrium
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="cge-eq-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
+      <div class="kpi-card danger">
+        <div class="kpi-value" id="cge-kpi-welfare">—</div>
+        <div class="kpi-label">Welfare Change</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value" id="cge-kpi-iters">—</div>
+        <div class="kpi-label">Iterations to Converge</div>
+      </div>
+      <div class="kpi-card ok">
+        <div class="kpi-value" id="cge-kpi-conv">—</div>
+        <div class="kpi-label">Convergence Status</div>
+      </div>
+    </div>
+
+    <div id="cge-eq-results" style="display:none">
+      <div id="cge-eq-subtabs" data-tabs>
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="tab-cge-price">💰 Price Changes</button>
+          <button class="tab-btn" data-tab="tab-cge-conv">📈 Convergence Path</button>
+          <button class="tab-btn" data-tab="tab-cge-trade">🌐 Trade Flow Shifts</button>
+        </div>
+        <div id="tab-cge-price" class="tab-pane active">
+          <div class="chart-box"><div id="chart-cge-price" style="height:360px"></div></div>
+        </div>
+        <div id="tab-cge-conv" class="tab-pane">
+          <div class="info-box">
+            Price path during CGE iteration. Fewer iterations = faster convergence;
+            oscillation suggests low substitution elasticity or large shock.
+          </div>
+          <div class="chart-box"><div id="chart-cge-conv" style="height:320px"></div></div>
+        </div>
+        <div id="tab-cge-trade" class="tab-pane">
+          <div class="info-box">
+            Green = country gains market share as buyers substitute away from shocked suppliers.
+            Red = country loses share.
+          </div>
+          <div class="chart-box"><div id="chart-cge-trade" style="height:380px"></div></div>
+          <div id="table-cge-trade"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Substitution Analysis -->
+  <div id="tab-cge-sub" class="tab-pane">
+    <div class="info-box">
+      Armington CES substitution: when one country's price rises, buyers shift to alternatives
+      weighted by σ (substitution elasticity). Higher σ = easier to switch.
+    </div>
+    <div class="card">
+      <div class="card-title">Substitution Parameters</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Sector</label>
+          <select id="cge-sub-sector" class="form-control">
+            {% for s in sectors %}{% set i = loop.index0 %}
+            <option value="{{ i }}" {% if i == 2 %}selected{% endif %}>{{ sector_short.get(s, s) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Price Shock Country</label>
+          <select id="cge-sub-country" class="form-control">
+            {% for c in ['China','Saudi_Arabia','South_Korea','India','Bangladesh','Turkey','USA','EU'] %}
+            <option value="{{ c }}">{{ c.replace('_',' ') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group" style="min-width:200px">
+          <label>Price Change: +<span id="cge-sub-pct-display">20</span>%</label>
+          <input type="range" id="cge-sub-pct" class="form-control" min="5" max="100" value="20">
+        </div>
+        <div class="form-group" style="justify-content:flex-end">
+          <button id="btn-cge-sub" class="btn-primary-custom">
+            <i class="fa fa-shuffle"></i> Calculate Substitution
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="chart-box">
+      <div id="chart-cge-sub" style="height:340px">
+        <div class="spinner-wrap" style="color:var(--text-muted)">
+          <i class="fa fa-shuffle"></i> Configure and run substitution analysis above
+        </div>
+      </div>
+    </div>
+    <div id="table-cge-sub"></div>
+  </div>
+</div>
+
+{% endblock %}

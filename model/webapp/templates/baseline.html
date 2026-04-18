@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Baseline Analysis{% endblock %}
+{% set active = "baseline" %}
+{% block page_title %}Baseline Supply Chain Analysis{% endblock %}
+{% block page_subtitle %}HHI · SCVI · China dependency · Resilience scorecard{% endblock %}
+{% block content %}
+<body data-page="baseline">
+
+<div id="baseline-tabs" data-tabs>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-hhi">📊 Concentration (HHI)</button>
+    <button class="tab-btn" data-tab="tab-china">🇨🇳 China Dependency</button>
+    <button class="tab-btn" data-tab="tab-scorecard">🛡️ Resilience Scorecard</button>
+  </div>
+
+  <div id="tab-hhi" class="tab-pane active">
+    <div class="info-box">
+      <strong>HHI &gt; 0.25</strong> = highly concentrated (critical risk) &nbsp;·&nbsp;
+      <strong>0.15–0.25</strong> = moderate &nbsp;·&nbsp; <strong>&lt; 0.15</strong> = low
+    </div>
+    <div class="chart-box">
+      <div id="chart-hhi" style="height:380px"><div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading model…</span></div></div>
+    </div>
+    <div id="table-hhi" style="margin-top:16px"></div>
+  </div>
+
+  <div id="tab-china" class="tab-pane">
+    <div class="info-box">
+      Nominal China share = direct HMRC imports. Effective = upstream-traced through Bangladesh/Vietnam fabric sourcing from China.
+    </div>
+    <div class="chart-box">
+      <div id="chart-china" style="height:380px"></div>
+    </div>
+    <div id="table-china" style="margin-top:16px"></div>
+  </div>
+
+  <div id="tab-scorecard" class="tab-pane">
+    <div class="info-box">
+      Composite resilience score 0–1. Grade F = highest risk. Radar shows five resilience dimensions per sector.
+    </div>
+    <div class="chart-box">
+      <div id="chart-scorecard" style="height:460px"></div>
+    </div>
+    <div id="table-scorecard" style="margin-top:16px"></div>
+  </div>
+</div>
+{% endblock %}

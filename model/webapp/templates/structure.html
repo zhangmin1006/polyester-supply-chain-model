@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Supply Chain Map{% endblock %}
+{% set active = "structure" %}
+{% block page_title %}Supply Chain Map{% endblock %}
+{% block page_subtitle %}Geographic flow diagram · Sankey diagram · IO network{% endblock %}
+{% block content %}
+<body data-page="structure">
+
+<div id="structure-tabs" data-tabs>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-sankey">🔗 Sankey Diagram</button>
+    <button class="tab-btn" data-tab="tab-geo">🗺️ Geographic Flow</button>
+    <button class="tab-btn" data-tab="tab-network">🕸️ IO Network</button>
+  </div>
+
+  <div id="tab-sankey" class="tab-pane active">
+    <div class="info-box">
+      Flow widths are proportional to relative import volumes. Geographic source nodes show HMRC 2023 import shares.
+    </div>
+    <div class="chart-box sankey-container">
+      <div id="chart-sankey" style="height:460px"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Supply Chain Stages</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:.8rem">
+        {% for stage, desc in [
+          ('§0 Oil Extraction',    'Crude oil — Saudi Arabia, UAE, Iraq, USA, Russia'),
+          ('§1 Chemical Processing','MEG + p-Xylene — China 35%, Saudi 18%, Korea 14%'),
+          ('§2 PTA Production',    'Purified Terephthalic Acid — China 67% global capacity'),
+          ('§3 PET Resin / Yarn',  'Polymerisation + spinning — China 60%, India 13%'),
+          ('§4 Fabric Weaving',    'Polyester fabric — China 43%, India 11%'),
+          ('§5 Garment Assembly',  'Final garments — China 27%, Bangladesh 12%, Turkey 6%'),
+          ('§6 UK Wholesale',      'Distribution / logistics — £20bn annual turnover'),
+          ('§7 UK Retail',         'Consumer sales — £51.4bn polyester apparel market'),
+        ] %}
+        <div style="background:var(--bg-hover);border-radius:6px;padding:10px">
+          <div style="font-weight:600;color:#a8c5da;margin-bottom:3px">{{ stage }}</div>
+          <div style="color:var(--text-muted)">{{ desc }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-geo" class="tab-pane">
+    {% set geo_png = figdir + "/fig00_supply_chain_geography.png" %}
+    <div class="info-box">Static figure from visualise.py — go to
+      <a href="/gallery" style="color:#457b9d">Figure Gallery</a> to generate it.</div>
+    <div id="geo-img-wrap">
+      <img src="/figures/fig00_supply_chain_geography.png" style="width:100%;border-radius:8px"
+           onerror="this.parentElement.innerHTML='<div class=warn-box>Figure not yet generated. Visit <a href=/gallery style=color:#e9c46a>Gallery</a> to generate all figures.</div>'">
+    </div>
+  </div>
+
+  <div id="tab-network" class="tab-pane">
+    <div class="two-col">
+      <div>
+        <img src="/figures/fig01_supply_chain_network.png" style="width:100%;border-radius:8px"
+             onerror="this.style.display='none'">
+      </div>
+      <div>
+        <img src="/figures/fig02_concentration_vulnerability.png" style="width:100%;border-radius:8px"
+             onerror="this.style.display='none'">
+      </div>
+    </div>
+    <div class="warn-box" id="no-figs-warn" style="display:none">
+      Figures not yet generated. Visit <a href="/gallery" style="color:#e9c46a">Figure Gallery</a>.
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const imgs = document.querySelectorAll('#tab-network img');
+  let missing = 0;
+  imgs.forEach(i => i.addEventListener('error', () => { missing++; if(missing===imgs.length) document.getElementById('no-figs-warn').style.display=''; }));
+</script>
+{% endblock %}

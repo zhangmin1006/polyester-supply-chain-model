@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}ABM Dynamics{% endblock %}
+{% set active = "abm" %}
+{% block page_title %}Agent-Based Model Dynamics{% endblock %}
+{% block page_subtitle %}Multi-agent supply chain simulation · Bullwhip effect · Service levels · Recovery analysis{% endblock %}
+{% block content %}
+<body data-page="abm">
+
+<!-- Shock configuration card (always visible) -->
+<div class="card">
+  <div class="card-title">Simulation Configuration</div>
+  <div class="form-row">
+    <div class="form-group">
+      <label>Shocked Sector</label>
+      <select id="abm-sector" class="form-control">
+        {% for s in sectors %}{% set i = loop.index0 %}
+        <option value="{{ i }}" {% if i == 2 %}selected{% endif %}>{{ sector_short.get(s, s) }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="min-width:180px">
+      <label>Shock Severity: <span id="abm-sev-display">50</span>%</label>
+      <input type="range" id="abm-sev" class="form-control" min="5" max="100" value="50">
+    </div>
+    <div class="form-group" style="min-width:150px">
+      <label>Onset Week: <span id="abm-onset-display">4</span></label>
+      <input type="range" id="abm-onset" class="form-control" min="1" max="20" value="4">
+    </div>
+    <div class="form-group" style="min-width:160px">
+      <label>Duration: <span id="abm-dur-display">12</span> wks</label>
+      <input type="range" id="abm-dur" class="form-control" min="1" max="40" value="12">
+    </div>
+    <div class="form-group" style="min-width:150px">
+      <label>Horizon: <span id="abm-T-display">52</span> wks</label>
+      <input type="range" id="abm-T" class="form-control" min="12" max="104" step="4" value="52">
+    </div>
+    <div class="form-group">
+      <label>Start Month</label>
+      <select id="abm-month" class="form-control" style="width:80px">
+        {% for m,n in [(1,'Jan'),(2,'Feb'),(3,'Mar'),(4,'Apr'),(5,'May'),(6,'Jun'),
+                       (7,'Jul'),(8,'Aug'),(9,'Sep'),(10,'Oct'),(11,'Nov'),(12,'Dec')] %}
+        <option value="{{ m }}">{{ n }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="flex-direction:row;align-items:center;gap:8px">
+      <label style="white-space:nowrap">
+        <input type="checkbox" id="abm-seasonal" checked> Seasonality
+      </label>
+    </div>
+    <div class="form-group" style="justify-content:flex-end">
+      <button id="btn-abm-run" class="btn-primary-custom">
+        <i class="fa fa-play"></i> Run ABM
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Summary KPIs -->
+<div id="abm-kpis" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
+  <div class="kpi-card danger">
+    <div class="kpi-value" id="abm-kpi-shortage">—</div>
+    <div class="kpi-label">Total Shortage</div>
+  </div>
+  <div class="kpi-card warn">
+    <div class="kpi-value" id="abm-kpi-bullwhip">—</div>
+    <div class="kpi-label">Max Bullwhip Ratio</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value" id="abm-kpi-service">—</div>
+    <div class="kpi-label">Avg Service Level</div>
+  </div>
+  <div class="kpi-card ok">
+    <div class="kpi-value" id="abm-kpi-recovery">—</div>
+    <div class="kpi-label">Avg Recovery</div>
+  </div>
+</div>
+
+<!-- Results tabs -->
+<div id="abm-result-tabs" style="display:none" data-tabs>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-abm-inv">📦 Inventory</button>
+    <button class="tab-btn" data-tab="tab-abm-short">🚨 Shortage</button>
+    <button class="tab-btn" data-tab="tab-abm-ord">📋 Orders</button>
+    <button class="tab-btn" data-tab="tab-abm-cap">⚙️ Capacity</button>
+    <button class="tab-btn" data-tab="tab-abm-price">💰 Prices</button>
+    <button class="tab-btn" data-tab="tab-abm-bw">📡 Bullwhip</button>
+    <button class="tab-btn" data-tab="tab-abm-svc">✅ Service & Recovery</button>
+  </div>
+
+  <div id="tab-abm-inv" class="tab-pane active">
+    <div class="info-box">
+      Agent inventory levels normalised to baseline capacity. A dip below 0.5 indicates
+      stockout risk; values above 1.5 suggest precautionary overstocking.
+    </div>
+    <div class="chart-box"><div id="chart-abm-inv" style="height:360px"></div></div>
+  </div>
+
+  <div id="tab-abm-short" class="tab-pane">
+    <div class="info-box">
+      Unsatisfied demand (shortage = demand − supply). Spikes propagate upstream due to
+      the bullwhip effect — upstream sectors over-order to cover downstream uncertainty.
+    </div>
+    <div class="chart-box"><div id="chart-abm-short" style="height:360px"></div></div>
+  </div>
+
+  <div id="tab-abm-ord" class="tab-pane">
+    <div class="info-box">
+      Order volumes placed by agents each week. Amplification vs the demand signal
+      reveals the bullwhip effect — upstream orders spike more than downstream demand.
+    </div>
+    <div class="chart-box"><div id="chart-abm-ord" style="height:360px"></div></div>
+  </div>
+
+  <div id="tab-abm-cap" class="tab-pane">
+    <div class="info-box">
+      Effective production capacity each week. Recovery above the shock-onset level
+      indicates agents have rebuilt supply chains or sourced alternative suppliers.
+    </div>
+    <div class="chart-box"><div id="chart-abm-cap" style="height:360px"></div></div>
+  </div>
+
+  <div id="tab-abm-price" class="tab-pane">
+    <div class="info-box">
+      Agent-level price dynamics. Prices rise during shortage as agents compete for
+      scarce supply, then gradually normalise as capacity recovers.
+    </div>
+    <div class="chart-box"><div id="chart-abm-price" style="height:360px"></div></div>
+  </div>
+
+  <div id="tab-abm-bw" class="tab-pane">
+    <div class="info-box">
+      Bullwhip Ratio = order variance / demand variance. Values &gt; 1 indicate demand
+      amplification. Upstream sectors (oil, chemicals) typically show higher ratios.
+    </div>
+    <div class="chart-box"><div id="chart-abm-bw" style="height:340px"></div></div>
+    <div id="table-abm-bw"></div>
+  </div>
+
+  <div id="tab-abm-svc" class="tab-pane">
+    <div class="two-col">
+      <div>
+        <div class="chart-title" style="margin-bottom:8px">Service Level by Stage</div>
+        <div class="chart-box"><div id="chart-abm-sl" style="height:320px"></div></div>
+        <div id="table-abm-sl"></div>
+      </div>
+      <div>
+        <div class="chart-title" style="margin-bottom:8px">Recovery Time by Stage</div>
+        <div class="chart-box"><div id="chart-abm-rt" style="height:320px"></div></div>
+        <div id="table-abm-rt"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

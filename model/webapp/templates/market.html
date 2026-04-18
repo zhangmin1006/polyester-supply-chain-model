@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}HMRC Market Data{% endblock %}
+{% set active = "market" %}
+{% block page_title %}HMRC OTS — UK Synthetic Apparel Imports{% endblock %}
+{% block page_subtitle %}29 HS6 codes · synthetic fibre chapters 61+62 · 2002-2024 · all countries{% endblock %}
+{% block content %}
+<body data-page="market">
+
+<div id="market-tabs" data-tabs>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-trends">📊 Trends</button>
+    <button class="tab-btn" data-tab="tab-breakdown">🌍 Country Breakdown</button>
+    <button class="tab-btn" data-tab="tab-seasonal">📆 Seasonal</button>
+    <button class="tab-btn" data-tab="tab-prices">💰 Unit Prices</button>
+  </div>
+
+  <div id="tab-trends" class="tab-pane active">
+    <div class="chart-box">
+      <div class="chart-title">Annual Import Trends by Country</div>
+      <div id="chart-trends" style="height:420px"></div>
+    </div>
+    <div class="chart-box">
+      <div class="chart-title">Year-on-Year Change (%)</div>
+      <div id="chart-yoy" style="height:300px"></div>
+    </div>
+  </div>
+
+  <div id="tab-breakdown" class="tab-pane">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Year</label>
+        <select id="sel-year" class="form-control" style="width:100px">
+          {% for y in years|reverse %}
+          <option value="{{ y }}" {% if y == latest_year %}selected{% endif %}>{{ y }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="chart-box">
+        <div class="chart-title">Import Share</div>
+        <div id="chart-pie" style="height:380px"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title">Top Countries — Stacked Area (2002-2024)</div>
+        <div id="chart-area" style="height:380px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-seasonal" class="tab-pane">
+    <div class="two-col">
+      <div class="chart-box">
+        <div class="chart-title">Monthly Seasonal Factors (NON-EU average 2002-2024)</div>
+        <div id="chart-seasonal" style="height:320px"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title">EU vs NON-EU Monthly Flows</div>
+        <div id="chart-eu-noneu" style="height:320px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-prices" class="tab-pane">
+    <div class="form-row" style="flex-wrap:wrap;gap:8px;margin-bottom:14px">
+      <label style="color:var(--text-muted);font-size:.75rem;font-weight:600;align-self:center">Countries:</label>
+      {% for c in ['China','Bangladesh','Turkey','India','Vietnam','Italy','Cambodia'] %}
+      <label style="display:flex;align-items:center;gap:5px;font-size:.8rem;cursor:pointer">
+        <input type="checkbox" class="country-check" value="{{ c }}"
+               {% if c in ['China','Bangladesh','Turkey','India'] %}checked{% endif %}>
+        {{ c }}
+      </label>
+      {% endfor %}
+      <button id="btn-unitprice" class="btn-primary-custom" style="margin-left:8px">
+        <i class="fa fa-refresh"></i> Update
+      </button>
+    </div>
+    <div class="chart-box">
+      <div class="chart-title">Unit Price Trend (£/kg)</div>
+      <div id="chart-unitprice" style="height:360px"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}

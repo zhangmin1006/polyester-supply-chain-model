@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% set active = "home" %}
+{% block page_title %}Polyester Textile Supply Chain{% endblock %}
+{% block page_subtitle %}UK Import Risk Analysis · IO × CGE × ABM × MRIO × Ghosh · HMRC OTS 2002-2024{% endblock %}
+
+{% block content %}
+<body data-page="home">
+
+<div class="kpi-grid">
+  <div class="kpi-card danger">
+    <div class="kpi-value">{{ total_imports }}</div>
+    <div class="kpi-label">Total UK Imports {{ latest_year }}</div>
+    <div class="kpi-delta {% if yoy[0]=='+' %}pos{% else %}neg{% endif %}">{{ yoy }} YoY</div>
+  </div>
+  <div class="kpi-card danger">
+    <div class="kpi-value">{{ china_share }}</div>
+    <div class="kpi-label">China Direct Share (HMRC)</div>
+    <div class="kpi-delta">Effective ~60% upstream</div>
+  </div>
+  <div class="kpi-card warn">
+    <div class="kpi-value">0.482</div>
+    <div class="kpi-label">PTA Concentration HHI</div>
+    <div class="kpi-delta neg">Critical — China 67%</div>
+  </div>
+  <div class="kpi-card ok">
+    <div class="kpi-value">208</div>
+    <div class="kpi-label">Model Parameters</div>
+    <div class="kpi-delta pos">37% real HMRC/ONS data</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value">5</div>
+    <div class="kpi-label">Shock Scenarios</div>
+    <div class="kpi-delta">PTA · MEG · Trade · Port · Pandemic</div>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="chart-box">
+    <div class="chart-title">UK Synthetic Apparel Imports 2002-2024</div>
+    <div id="chart-trends" style="height:400px"></div>
+  </div>
+  <div class="chart-box">
+    <div class="chart-title">Monthly Seasonal Demand Pattern (HMRC average)</div>
+    <div id="chart-seasonal" style="height:400px"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Quick Navigation</div>
+  <div class="three-col" style="gap:12px">
+    {% for href, icon, title, desc in [
+      ('/market',    'fa-chart-line',      'HMRC Market Data',   'Import trends 2002-2024, country breakdown, seasonal patterns'),
+      ('/baseline',  'fa-chart-bar',       'Baseline Analysis',  'HHI concentration, China dependency, resilience scorecard'),
+      ('/mrio',      'fa-globe',           'MRIO Analysis',      '8-region value-added decomposition, China exposure'),
+      ('/ghosh',     'fa-arrows-alt',      'Ghosh Supply-Push',  'Forward linkages, 4-quadrant map, supply shock scenarios'),
+      ('/scenarios', 'fa-bolt',            'Scenario Simulator', 'Run S1–S5 with full IO × CGE × ABM model'),
+      ('/gallery',   'fa-images',          'Figure Gallery',     'Generate and browse all 49 static publication figures'),
+    ] %}
+    <a href="{{ href }}" style="text-decoration:none">
+      <div class="kpi-card" style="cursor:pointer;transition:border-color .15s" onmouseover="this.style.borderColor='#457b9d'" onmouseout="this.style.borderColor=''">
+        <div style="font-size:1.4rem;margin-bottom:8px"><i class="fa {{ icon }}" style="color:#457b9d"></i></div>
+        <div style="font-weight:600;margin-bottom:4px;font-size:.85rem">{{ title }}</div>
+        <div class="kpi-label" style="text-transform:none;font-size:.72rem">{{ desc }}</div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

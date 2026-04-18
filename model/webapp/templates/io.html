@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}I-O Analysis{% endblock %}
+{% set active = "io" %}
+{% block page_title %}Input-Output Model Analysis{% endblock %}
+{% block page_subtitle %}Leontief multipliers · Backward/forward linkages · Dynamic shock simulation{% endblock %}
+{% block content %}
+<body data-page="io">
+
+<div id="io-tabs" data-tabs>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-io-mult">📊 Multipliers</button>
+    <button class="tab-btn" data-tab="tab-io-link">🔗 Linkages</button>
+    <button class="tab-btn" data-tab="tab-io-shock">⚡ Shock Impact</button>
+    <button class="tab-btn" data-tab="tab-io-sim">▶ Dynamic Simulation</button>
+    <button class="tab-btn" data-tab="tab-io-calib">🎯 Calibration</button>
+  </div>
+
+  <!-- Multipliers -->
+  <div id="tab-io-mult" class="tab-pane active">
+    <div class="info-box">
+      Output multiplier = total gross output generated per unit of final demand in that sector
+      (Leontief inverse row sum). Red bars exceed the mean — these are high-leverage sectors.
+    </div>
+    <div class="chart-box">
+      <div id="chart-io-mult" style="height:360px">
+        <div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div>
+      </div>
+    </div>
+    <div id="table-io-mult"></div>
+  </div>
+
+  <!-- Linkages -->
+  <div id="tab-io-link" class="tab-pane">
+    <div class="info-box">
+      <strong>Top-right quadrant</strong> (BL &amp; FL &gt; 1): structurally key sectors — shocks propagate both upstream and downstream.
+      <strong>Top-left</strong>: supply-push dominant. <strong>Bottom-right</strong>: demand-pull dominant.
+    </div>
+    <div class="chart-box">
+      <div id="chart-io-link" style="height:480px"></div>
+    </div>
+    <div id="table-io-link"></div>
+  </div>
+
+  <!-- Shock Impact -->
+  <div id="tab-io-shock" class="tab-pane">
+    <div class="card">
+      <div class="card-title">Shock Configuration</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Shocked Sector</label>
+          <select id="io-shock-sector" class="form-control">
+            {% for s in sectors %}{% set i = loop.index0 %}
+            <option value="{{ i }}">{{ sector_short.get(s, s) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group" style="min-width:200px">
+          <label>Capacity Loss: <span id="io-shock-sev-display">50</span>%</label>
+          <input type="range" id="io-shock-sev" class="form-control" min="5" max="100" value="50">
+        </div>
+        <div class="form-group" style="justify-content:flex-end">
+          <button id="btn-io-shock" class="btn-primary-custom">
+            <i class="fa fa-bolt"></i> Calculate Impact
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="io-shock-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(2,1fr)">
+      <div class="kpi-card danger">
+        <div class="kpi-value" id="io-kpi-loss">—</div>
+        <div class="kpi-label">Disruption Value</div>
+      </div>
+      <div class="kpi-card warn">
+        <div class="kpi-value" id="io-kpi-sector">—</div>
+        <div class="kpi-label">Sector Shocked</div>
+      </div>
+    </div>
+    <div class="chart-box">
+      <div id="chart-io-shock" style="height:380px">
+        <div class="spinner-wrap" style="color:var(--text-muted)">
+          <i class="fa fa-bolt"></i> Configure and calculate impact above
+        </div>
+      </div>
+    </div>
+    <div id="table-io-shock"></div>
+  </div>
+
+  <!-- Dynamic Simulation -->
+  <div id="tab-io-sim" class="tab-pane">
+    <div class="card">
+      <div class="card-title">Simulation Parameters</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Shocked Sector</label>
+          <select id="io-sim-sector" class="form-control">
+            {% for s in sectors %}{% set i = loop.index0 %}
+            <option value="{{ i }}" {% if i == 2 %}selected{% endif %}>{{ sector_short.get(s, s) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group" style="min-width:180px">
+          <label>Capacity Loss: <span id="io-sim-frac-display">50</span>%</label>
+          <input type="range" id="io-sim-frac" class="form-control" min="5" max="100" value="50">
+        </div>
+        <div class="form-group" style="min-width:140px">
+          <label>Onset Week: <span id="io-sim-onset-display">4</span></label>
+          <input type="range" id="io-sim-onset" class="form-control" min="1" max="20" value="4">
+        </div>
+        <div class="form-group" style="min-width:160px">
+          <label>Duration: <span id="io-sim-dur-display">12</span> wks</label>
+          <input type="range" id="io-sim-dur" class="form-control" min="1" max="40" value="12">
+        </div>
+        <div class="form-group" style="min-width:140px">
+          <label>Horizon: <span id="io-sim-T-display">52</span> wks</label>
+          <input type="range" id="io-sim-T" class="form-control" min="12" max="104" step="4" value="52">
+        </div>
+        <div class="form-group" style="justify-content:flex-end">
+          <button id="btn-io-sim" class="btn-primary-custom">
+            <i class="fa fa-play"></i> Run Simulation
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="io-sim-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
+      <div class="kpi-card danger">
+        <div class="kpi-value" id="io-sim-kpi-shortage">—</div>
+        <div class="kpi-label">Total IO Shortage</div>
+      </div>
+      <div class="kpi-card warn">
+        <div class="kpi-value" id="io-sim-kpi-drop">—</div>
+        <div class="kpi-label">Max Output Drop</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value" id="io-sim-kpi-sector">—</div>
+        <div class="kpi-label">Most Affected</div>
+      </div>
+    </div>
+
+    <div id="io-sim-results" style="display:none">
+      <div id="io-sim-subtabs" data-tabs>
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="tab-io-sim-out">📉 Gross Output</button>
+          <button class="tab-btn" data-tab="tab-io-sim-short">📦 Shortage</button>
+          <button class="tab-btn" data-tab="tab-io-sim-price">💰 Price Index</button>
+        </div>
+        <div id="tab-io-sim-out" class="tab-pane active">
+          <div class="chart-box"><div id="chart-io-sim-out" style="height:360px"></div></div>
+        </div>
+        <div id="tab-io-sim-short" class="tab-pane">
+          <div class="chart-box"><div id="chart-io-sim-short" style="height:360px"></div></div>
+        </div>
+        <div id="tab-io-sim-price" class="tab-pane">
+          <div class="chart-box"><div id="chart-io-sim-price" style="height:360px"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibration -->
+  <div id="tab-io-calib" class="tab-pane">
+    <div class="info-box">
+      Model calibration vs HMRC/ONS target shares. Error &lt; 5% is acceptable for a 8-sector stylised IO table.
+    </div>
+    <div id="table-io-calib"></div>
+  </div>
+</div>
+
+{% endblock %}

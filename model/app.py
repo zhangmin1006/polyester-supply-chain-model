@@ -1,0 +1,1240 @@
+"""
+app.py
+Full integrated UI for the Polyester Textile Supply Chain Model.
+
+Integrates all analysis and visualisation functions:
+  IO × CGE × ABM × MRIO × Ghosh | HMRC 2002-2024 | 5 shock scenarios
+
+Launch:
+    cd model
+    streamlit run app.py
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+DATA_DIR = Path(__file__).parent / "data"
+FIG_DIR  = Path(__file__).parent / "results" / "figures"
+
+SECTORS = [
+    "Oil_Extraction","Chemical_Processing","PTA_Production","PET_Resin_Yarn",
+    "Fabric_Weaving","Garment_Assembly","UK_Wholesale","UK_Retail",
+]
+SECTOR_SHORT = {
+    "Oil_Extraction":"Oil","Chemical_Processing":"Chemicals","PTA_Production":"PTA",
+    "PET_Resin_Yarn":"PET/Yarn","Fabric_Weaving":"Fabric","Garment_Assembly":"Garment",
+    "UK_Wholesale":"Wholesale","UK_Retail":"Retail",
+}
+COUNTRY_COLORS = {
+    "China":"#e63946","Bangladesh":"#2a9d8f","Turkey":"#e9c46a",
+    "India":"#f4a261","Vietnam":"#264653","Italy":"#457b9d",
+    "Cambodia":"#6d6875","Sri_Lanka":"#a8dadc","Other":"#adb5bd",
+}
+SCENARIO_INFO = {
+    "S1":("PTA Production Shock",      "50% PTA output lost — Eastern China earthquake/policy"),
+    "S2":("MEG Supply Disruption",     "Saudi MEG disruption — Red Sea / Strait of Hormuz"),
+    "S3":("UK–China Trade Restriction","35% tariff on Chinese synthetic apparel imports"),
+    "S4":("Zhangjiagang Port Closure", "418 kt MEG port closed — typhoon or COVID lockdown"),
+    "S5":("Multi-Node Pandemic Shock", "COVID-style simultaneous multi-stage disruption"),
+}
+HMRC_SEASONAL = [0.993,0.909,1.026,0.941,0.963,0.963,1.052,1.062,1.099,1.145,0.977,0.871]
+MONTHS        = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+DARK          = "plotly_dark"
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Polyester Supply Chain",
+    page_icon="🧵",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown("""
+<style>
+div[data-testid="metric-container"]{background:#1e2a3a;border-radius:8px;
+  padding:12px 16px;border-left:4px solid #457b9d;}
+.stTabs [data-baseweb="tab"]{font-size:0.85rem;}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Cached loaders ────────────────────────────────────────────────────────────
+@st.cache_data
+def _annual():  return pd.read_csv(DATA_DIR/"hmrc_annual_country.csv")
+@st.cache_data
+def _monthly(): return pd.read_csv(DATA_DIR/"hmrc_monthly_country.csv")
+@st.cache_data
+def _eu_nn():   return pd.read_csv(DATA_DIR/"hmrc_monthly_eu_noneu.csv")
+
+@st.cache_resource
+def _model():
+    from integrated_model import IntegratedSupplyChainModel
+    return IntegratedSupplyChainModel()
+
+@st.cache_resource
+def _mrio():
+    from mrio_model import MRIOModel
+    return MRIOModel()
+
+@st.cache_resource
+def _ghosh():
+    from ghosh_model import GhoshModel
+    return GhoshModel()
+
+@st.cache_data
+def _baseline(_m):
+    return _m.baseline_report()
+
+# ── Sidebar navigation ────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### 🧵 Polyester Supply Chain")
+    st.caption("UK Import Risk | HMRC 2002-2024\nIO × CGE × ABM × MRIO × Ghosh")
+    st.divider()
+
+    page = st.radio("", [
+        "🏠 Home",
+        "📈 HMRC Market Data",
+        "🗺️ Supply Chain Map",
+        "📊 Baseline Analysis",
+        "🌍 MRIO Analysis",
+        "🔄 Ghosh Supply-Push",
+        "⚡ Scenario Simulator",
+        "📋 All Scenarios",
+        "✅ Validation",
+        "🖼️ Figure Gallery",
+    ], label_visibility="collapsed")
+
+    st.divider()
+    with st.expander("ℹ️ Model components"):
+        st.markdown("""
+**Demand-side**
+- Dynamic Leontief I-O
+- CGE price equilibrium
+- ABM Beer-Game agents
+
+**Supply-side**
+- MRIO (8 regions × 8 sectors)
+- Ghosh forward propagation
+
+**Data**
+- HMRC OTS API 2002-2024
+- ONS IO Tables 2023
+- GTAP v10 elasticities
+        """)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HOME
+# ═══════════════════════════════════════════════════════════════════════════════
+if page == "🏠 Home":
+    st.title("Polyester Textile Supply Chain Model")
+    st.markdown("*UK synthetic apparel imports · 8-stage supply chain · 5 shock scenarios · HMRC 2002-2024*")
+    st.divider()
+
+    annual = _annual()
+    latest = int(annual["Year"].max())
+    tot    = annual[annual["Year"]==latest]["Value"].sum()
+    china  = annual[(annual["Year"]==latest)&(annual["Country"]=="China")]["Value"].sum()
+
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("Total UK Imports", f"£{tot/1e9:.2f}bn", f"{latest}")
+    c2.metric("China Direct Share", f"{china/tot*100:.1f}%", "HMRC nominal")
+    c3.metric("Effective China Exposure", "~60%", "upstream-traced")
+    c4.metric("PTA Concentration (HHI)", "0.482", "Critical — China 67%")
+    c5.metric("Model Parameters", "208", "37% real HMRC/ONS data")
+
+    st.divider()
+
+    # Quick overview charts
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        st.subheader("UK Imports 2002–2024 (total)")
+        totals = annual.groupby("Year")["Value"].sum().reset_index()
+        totals["YoY_%"] = totals["Value"].pct_change()*100
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=totals["Year"], y=totals["Value"]/1e9,
+                                 fill="tozeroy", fillcolor="rgba(69,123,157,0.2)",
+                                 line=dict(color="#457b9d",width=2), name="Total £bn"))
+        for yr,label in [(2020,"COVID"),(2022,"Ukraine"),(2024,"Red Sea")]:
+            fig.add_vline(x=yr, line_dash="dot", line_color="#475569",
+                         annotation_text=label, annotation_font_size=9,
+                         annotation_font_color="#94a3b8")
+        fig.update_layout(height=300, template=DARK, showlegend=False,
+                         yaxis_title="£bn", margin=dict(l=0,r=0,t=10,b=0),
+                         hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_r:
+        st.subheader("Supply Chain Resilience Grades")
+        grades = {"PTA_Production":"F","PET_Resin_Yarn":"D","Fabric_Weaving":"C",
+                  "UK_Wholesale":"C","UK_Retail":"C","Chemical_Processing":"C",
+                  "Garment_Assembly":"C","Oil_Extraction":"B"}
+        color_map = {"F":"#e63946","D":"#f4a261","C":"#e9c46a","B":"#2a9d8f","A":"#264653"}
+        df_g = pd.DataFrame({"Sector":list(grades.keys()),"Grade":list(grades.values())})
+        df_g["Color"] = df_g["Grade"].map(color_map)
+        df_g["Short"] = df_g["Sector"].map(SECTOR_SHORT)
+        fig2 = go.Figure(go.Bar(
+            x=df_g["Short"], y=[1]*8,
+            marker_color=df_g["Color"],
+            text=df_g["Grade"], textposition="inside",
+            textfont=dict(size=18, color="white", family="monospace"),
+            showlegend=False,
+        ))
+        fig2.update_layout(height=300, template=DARK, yaxis_visible=False,
+                          margin=dict(l=0,r=0,t=10,b=0))
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.divider()
+    st.subheader("Quick Navigation")
+    cols = st.columns(5)
+    nav_items = [
+        ("📈 HMRC Market Data",  "HMRC import trends 2002-2024"),
+        ("🌍 MRIO Analysis",     "8-region value-added decomposition"),
+        ("🔄 Ghosh Supply-Push", "Forward linkage & supply shocks"),
+        ("⚡ Scenario Simulator","Run S1–S5 with full IO×CGE×ABM"),
+        ("🖼️ Figure Gallery",   "Generate & view all 49 figures"),
+    ]
+    for col, (nav, desc) in zip(cols, nav_items):
+        col.info(f"**{nav}**\n\n{desc}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HMRC MARKET DATA
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "📈 HMRC Market Data":
+    st.title("HMRC OTS — UK Synthetic Apparel Imports")
+    st.caption("29 HS6 codes · synthetic fibre chapters 61+62 · 2002-2024 · all countries")
+
+    annual  = _annual()
+    monthly = _monthly()
+    eu_nn   = _eu_nn()
+
+    latest = int(annual["Year"].max())
+    prev   = latest - 1
+    tot_l  = annual[annual["Year"]==latest]["Value"].sum()
+    tot_p  = annual[annual["Year"]==prev]["Value"].sum()
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric(f"Total {latest}", f"£{tot_l/1e9:.2f}bn", f"{(tot_l-tot_p)/tot_p*100:+.1f}% YoY")
+    c2.metric("China share", f"{annual[(annual['Year']==latest)&(annual['Country']=='China')]['Value'].sum()/tot_l*100:.1f}%")
+    noneu_l = eu_nn[(eu_nn["Year"]==latest)&(eu_nn["Flow"]=="NON-EU")]["Value"].sum()
+    noneu_p = eu_nn[(eu_nn["Year"]==prev)  &(eu_nn["Flow"]=="NON-EU")]["Value"].sum()
+    c3.metric("NON-EU imports", f"£{noneu_l/1e9:.2f}bn", f"{(noneu_l-noneu_p)/noneu_p*100:+.1f}% YoY")
+    c4.metric("Years of data", "23", "2002–2024")
+
+    tab1,tab2,tab3,tab4 = st.tabs(["📊 Trends","🌍 Country Breakdown","📆 Seasonal","🔍 Explorer"])
+
+    # ── Trends ────────────────────────────────────────────────────────────────
+    with tab1:
+        top7 = annual.groupby("Country")["Value"].sum().nlargest(7).index.tolist()
+        fig = go.Figure()
+        for yr,lbl in [(2008,"GFC"),(2016,"Brexit"),(2020,"COVID"),(2022,"Ukraine"),(2024,"Red Sea")]:
+            fig.add_vline(x=yr, line_dash="dot", line_color="#475569", line_width=1,
+                         annotation_text=lbl, annotation_font_size=9,
+                         annotation_font_color="#94a3b8")
+        for c in top7:
+            d = annual[annual["Country"]==c].sort_values("Year")
+            fig.add_trace(go.Scatter(x=d["Year"], y=d["Value"]/1e6,
+                                     name=c.replace("_"," "),
+                                     line=dict(color=COUNTRY_COLORS.get(c,"#adb5bd"),width=2),
+                                     mode="lines+markers", marker=dict(size=4)))
+        fig.update_layout(height=400, template=DARK, yaxis_title="£ million",
+                         legend=dict(orientation="h",y=-0.2), hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # YoY bar
+        totals = annual.groupby("Year")["Value"].sum().reset_index()
+        totals["YoY_%"] = totals["Value"].pct_change()*100
+        fig_yoy = go.Figure(go.Bar(
+            x=totals["Year"], y=totals["YoY_%"].fillna(0),
+            marker_color=["#e63946" if v<0 else "#2a9d8f" for v in totals["YoY_%"].fillna(0)],
+            text=[f"{v:.1f}%" for v in totals["YoY_%"].fillna(0)],
+            textposition="outside", textfont=dict(size=8),
+        ))
+        fig_yoy.update_layout(height=280, template=DARK, yaxis_title="YoY %",
+                             margin=dict(l=0,r=0,t=10,b=0))
+        st.plotly_chart(fig_yoy, use_container_width=True)
+
+    # ── Country breakdown ────────────────────────────────────────────────────
+    with tab2:
+        yr_sel = st.slider("Year", 2002, 2024, latest, key="cb_yr")
+        yd = annual[annual["Year"]==yr_sel].sort_values("Value", ascending=False)
+        tot_yr = yd["Value"].sum()
+        top8   = yd.head(8)
+        other  = tot_yr - top8["Value"].sum()
+        pie_df = pd.concat([top8[["Country","Value"]],
+                            pd.DataFrame([{"Country":"Other","Value":other}])],
+                           ignore_index=True)
+
+        col_p, col_s = st.columns([2,3])
+        with col_p:
+            fig_pie = go.Figure(go.Pie(
+                labels=pie_df["Country"].str.replace("_"," "),
+                values=pie_df["Value"], hole=0.42,
+                marker=dict(colors=[COUNTRY_COLORS.get(c,"#adb5bd") for c in pie_df["Country"]]),
+                textinfo="label+percent", textfont_size=11,
+            ))
+            fig_pie.update_layout(height=380, template=DARK, showlegend=False,
+                                 annotations=[dict(text=f"<b>{yr_sel}</b>",x=0.5,y=0.5,
+                                                   showarrow=False,font=dict(size=18,color="white"))])
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        with col_s:
+            # Stacked area over time
+            top5 = annual.groupby("Country")["Value"].sum().nlargest(5).index.tolist()
+            area_data = annual[annual["Country"].isin(top5)].sort_values(["Year","Country"])
+            fig_area = px.area(area_data, x="Year", y="Value", color="Country",
+                              template=DARK, height=380,
+                              labels={"Value":"£ imports"},
+                              color_discrete_map={c:COUNTRY_COLORS.get(c,"#adb5bd") for c in top5})
+            fig_area.update_layout(legend=dict(orientation="h",y=-0.2), hovermode="x unified")
+            st.plotly_chart(fig_area, use_container_width=True)
+
+        # Unit price trends
+        st.subheader("Unit Price Trend (£/kg)")
+        sel_up = st.multiselect("Countries", annual["Country"].unique().tolist(),
+                                default=["China","Bangladesh","Turkey","India"], key="up_c")
+        up_data = annual[annual["Country"].isin(sel_up) & annual["UnitPrice_GBP_per_kg"].notna()]
+        fig_up = px.line(up_data.sort_values("Year"), x="Year", y="UnitPrice_GBP_per_kg",
+                        color="Country", template=DARK, height=300,
+                        labels={"UnitPrice_GBP_per_kg":"£/kg"})
+        fig_up.update_layout(hovermode="x unified", legend=dict(orientation="h",y=-0.25))
+        st.plotly_chart(fig_up, use_container_width=True)
+
+    # ── Seasonal ─────────────────────────────────────────────────────────────
+    with tab3:
+        cs1,cs2 = st.columns(2)
+        with cs1:
+            st.subheader("Monthly Seasonal Factors (avg 2002-2024)")
+            bar_c = ["#e63946" if v==max(HMRC_SEASONAL) else
+                     "#2a9d8f" if v==min(HMRC_SEASONAL) else "#457b9d"
+                     for v in HMRC_SEASONAL]
+            fig_s = go.Figure(go.Bar(x=MONTHS, y=HMRC_SEASONAL, marker_color=bar_c,
+                                    text=[f"{v:.3f}" for v in HMRC_SEASONAL],
+                                    textposition="outside"))
+            fig_s.add_hline(y=1.0, line_dash="dash", line_color="#94a3b8")
+            fig_s.update_layout(height=320, template=DARK, yaxis_range=[0.8,1.25],
+                               yaxis_title="Seasonal factor")
+            st.plotly_chart(fig_s, use_container_width=True)
+
+        with cs2:
+            st.subheader("Monthly NON-EU by Year")
+            rec = eu_nn[eu_nn["Flow"]=="NON-EU"].sort_values(["Year","Month"])
+            yr_opts = sorted(rec["Year"].unique().tolist())
+            sel_yrs = st.multiselect("Years", yr_opts, default=yr_opts[-3:], key="seas_yrs")
+            fig_m = go.Figure()
+            for yr in sel_yrs:
+                d = rec[rec["Year"]==yr]
+                fig_m.add_trace(go.Scatter(x=[MONTHS[m-1] for m in d["Month"]],
+                                           y=d["Value"]/1e6, name=str(yr), mode="lines+markers"))
+            fig_m.update_layout(height=320, template=DARK, yaxis_title="£ million (NON-EU)",
+                               legend=dict(orientation="h",y=-0.28))
+            st.plotly_chart(fig_m, use_container_width=True)
+
+    # ── Explorer ─────────────────────────────────────────────────────────────
+    with tab4:
+        f1,f2,f3 = st.columns(3)
+        yr_rng  = f1.slider("Year range", 2002, 2024, (2010,2024), key="ex_yr")
+        sel_c   = f2.multiselect("Countries", sorted(annual["Country"].unique()),
+                                 default=["China","Bangladesh","Turkey","Vietnam"], key="ex_c")
+        chart_t = f3.selectbox("Chart type", ["Line","Bar","Stacked Area"], key="ex_ct")
+
+        filt = annual[(annual["Year"]>=yr_rng[0])&(annual["Year"]<=yr_rng[1])]
+        plot_d = filt[filt["Country"].isin(sel_c)] if sel_c else filt
+
+        if chart_t=="Line":
+            fig_ex = px.line(plot_d.sort_values("Year"), x="Year", y="Value",
+                            color="Country", template=DARK, height=380)
+            fig_ex.update_traces(mode="lines+markers")
+        elif chart_t=="Bar":
+            fig_ex = px.bar(plot_d.sort_values("Year"), x="Year", y="Value",
+                           color="Country", barmode="group", template=DARK, height=380)
+        else:
+            fig_ex = px.area(plot_d.sort_values(["Year","Country"]), x="Year", y="Value",
+                            color="Country", template=DARK, height=380)
+        fig_ex.update_layout(yaxis_title="£ imports", hovermode="x unified",
+                            legend=dict(orientation="h",y=-0.2))
+        st.plotly_chart(fig_ex, use_container_width=True)
+
+        # EU vs NON-EU
+        eu_f = eu_nn[(eu_nn["Year"]>=yr_rng[0])&(eu_nn["Year"]<=yr_rng[1])].copy()
+        eu_f["Date"] = pd.to_datetime(eu_f[["Year","Month"]].assign(day=1))
+        fig_eu = px.area(eu_f.sort_values(["Date","Flow"]), x="Date", y="Value",
+                        color="Flow", template=DARK, height=280,
+                        color_discrete_map={"EU":"#457b9d","NON-EU":"#e63946"})
+        fig_eu.update_layout(yaxis_title="£ monthly", hovermode="x unified")
+        st.plotly_chart(fig_eu, use_container_width=True)
+
+        st.download_button("⬇ Download CSV", data=plot_d.to_csv(index=False),
+                          file_name=f"hmrc_{yr_rng[0]}_{yr_rng[1]}.csv", mime="text/csv")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUPPLY CHAIN MAP
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "🗺️ Supply Chain Map":
+    st.title("Supply Chain Map & Structure")
+
+    tab_geo, tab_sankey, tab_network = st.tabs(["🗺️ Geographic Flow","🔗 Sankey Diagram","🕸️ IO Network"])
+
+    with tab_geo:
+        geo_png = FIG_DIR / "fig00_supply_chain_geography.png"
+        net_png = FIG_DIR / "fig01_supply_chain_network.png"
+        if geo_png.exists():
+            st.image(str(geo_png), caption="Geographic supply chain flow — crude oil → UK retail",
+                    use_container_width=True)
+        else:
+            st.warning("Geographic diagram not generated yet. Go to **🖼️ Figure Gallery** and click Generate.")
+
+        if net_png.exists():
+            st.image(str(net_png), caption="I-O network — China dependency by stage",
+                    use_container_width=True)
+
+    with tab_sankey:
+        st.subheader("Supply Chain Flow (interactive Sankey)")
+        node_labels = [
+            "Oil Extraction","Chemical Processing","PTA Production","PET / Yarn",
+            "Fabric Weaving","Garment Assembly","UK Wholesale","UK Retail",
+            "China","Bangladesh","Vietnam","Turkey","India","EU",
+        ]
+        node_colors = [
+            "#264653","#2a9d8f","#1d6a9d","#1d3557",
+            "#2a9d8f","#1d6a9d","#e9c46a","#2a9d8f",
+            "#e63946","#2a9d8f","#264653","#e9c46a","#f4a261","#457b9d",
+        ]
+        src = [0,1,2,3,4,5,6,  8, 8, 9,10,11,12,13]
+        tgt = [1,2,3,4,5,6,7,  5, 4, 5, 5, 5, 5, 6]
+        val = [100,90,85,80,75,70,65, 27,15,12,10,9,8,24]
+        fig_sk = go.Figure(go.Sankey(
+            node=dict(label=node_labels, color=node_colors, pad=14, thickness=20),
+            link=dict(source=src, target=tgt, value=val,
+                     color=["rgba(180,180,180,0.25)"]*len(src)),
+        ))
+        fig_sk.update_layout(height=450, template=DARK, font=dict(color="white",size=12),
+                            margin=dict(l=10,r=10,t=20,b=10))
+        st.plotly_chart(fig_sk, use_container_width=True)
+
+        with st.expander("Stage descriptions"):
+            for i, s in enumerate(SECTORS):
+                st.markdown(f"**§{i} {SECTOR_SHORT[s]}** — {s.replace('_',' ')}")
+
+    with tab_network:
+        conc_png = FIG_DIR / "fig02_concentration_vulnerability.png"
+        sc_png   = FIG_DIR / "fig03_resilience_scorecard.png"
+        if conc_png.exists():
+            st.image(str(conc_png), use_container_width=True)
+        if sc_png.exists():
+            st.image(str(sc_png), use_container_width=True)
+        if not conc_png.exists():
+            st.info("Go to **🖼️ Figure Gallery** to generate all figures.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BASELINE ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "📊 Baseline Analysis":
+    st.title("Baseline Supply Chain Analysis")
+
+    with st.spinner("Loading model (~10 s first load)…"):
+        model    = _model()
+        baseline = _baseline(model)
+
+    tab_hhi, tab_china, tab_mult, tab_score = st.tabs(
+        ["📊 HHI Concentration","🇨🇳 China Dependency","⚙️ IO Multipliers","🛡️ Resilience Scorecard"])
+
+    with tab_hhi:
+        hhi = baseline["hhi"]
+        scvi = baseline["scvi"]
+        ca,cb = st.columns(2)
+        with ca:
+            h = hhi.sort_values("HHI", ascending=True)
+            fig = go.Figure(go.Bar(
+                x=h["HHI"], y=h["Sector"], orientation="h",
+                marker_color=["#e63946" if v>0.25 else "#e9c46a" if v>0.15 else "#2a9d8f"
+                              for v in h["HHI"]],
+                text=[f"{v:.3f}" for v in h["HHI"]], textposition="outside",
+            ))
+            fig.add_vline(x=0.25, line_dash="dash", line_color="#e63946",
+                         annotation_text="High (>0.25)", annotation_font_color="#e63946",
+                         annotation_font_size=9)
+            fig.add_vline(x=0.15, line_dash="dash", line_color="#e9c46a",
+                         annotation_text="Moderate", annotation_font_color="#e9c46a",
+                         annotation_font_size=9)
+            fig.update_layout(height=340, template=DARK, title="HHI by Sector",
+                             margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig, use_container_width=True)
+        with cb:
+            if isinstance(scvi, pd.DataFrame):
+                fig2 = px.bar(scvi.sort_values("SCVI", ascending=False),
+                             x="Sector", y="SCVI", color="Risk_Level",
+                             color_discrete_map={"Critical":"#e63946","High":"#f4a261",
+                                                 "Medium":"#e9c46a","Low":"#2a9d8f"},
+                             template=DARK, height=340, title="SCVI by Sector")
+                st.plotly_chart(fig2, use_container_width=True)
+        st.dataframe(hhi, use_container_width=True, hide_index=True)
+
+    with tab_china:
+        eff = baseline["eff_china"]
+        if isinstance(eff, pd.DataFrame):
+            ec = eff.sort_values("Effective_China_%", ascending=True)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=ec["Nominal_China_%"], y=ec["Sector"],
+                                orientation="h", name="Nominal (HMRC)",
+                                marker_color="#457b9d", opacity=0.7))
+            fig.add_trace(go.Bar(x=ec["Effective_China_%"], y=ec["Sector"],
+                                orientation="h", name="Effective (upstream-traced)",
+                                marker_color="#e63946", opacity=0.85))
+            fig.add_vline(x=27.3, line_dash="dot", line_color="#94a3b8",
+                         annotation_text="HMRC direct 27.3%",
+                         annotation_font_color="#94a3b8", annotation_font_size=9)
+            fig.update_layout(barmode="overlay", height=380, template=DARK,
+                             xaxis_title="China dependency %",
+                             legend=dict(orientation="h",y=-0.15),
+                             title="Nominal vs Effective China Dependency")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(eff, use_container_width=True, hide_index=True)
+
+    with tab_mult:
+        mult = baseline["multipliers"]
+        if isinstance(mult, pd.DataFrame):
+            fig = px.bar(mult.sort_values("Output_Multiplier", ascending=True),
+                        x="Output_Multiplier", y="Sector", orientation="h",
+                        template=DARK, height=320, text="Output_Multiplier",
+                        title="I-O Output Multipliers (£1 final demand → total output)")
+            fig.update_traces(texttemplate="%{text:.3f}", textposition="outside",
+                             marker_color="#457b9d")
+            fig.add_vline(x=1.0, line_dash="dash", line_color="#94a3b8")
+            st.plotly_chart(fig, use_container_width=True)
+
+        calibration = baseline.get("calibration")
+        if isinstance(calibration, pd.DataFrame):
+            st.subheader("Calibration Report")
+            st.dataframe(calibration, use_container_width=True, hide_index=True)
+
+    with tab_score:
+        sc = baseline["scorecard"]
+        if isinstance(sc, pd.DataFrame):
+            num_cols = [c for c in sc.columns if sc[c].dtype in [float,np.float64]]
+            st.dataframe(sc.style.background_gradient(cmap="RdYlGn", subset=num_cols),
+                        use_container_width=True, height=340)
+
+            # Radar chart of first 5 sectors
+            cats  = ["HHI_Score","Redundancy_Score","Substitution_Score",
+                     "Buffer_Score","China_Dep_Score"]
+            fig_r = go.Figure()
+            for _, row in sc.iterrows():
+                vals = [row[c] for c in cats] + [row[cats[0]]]
+                fig_r.add_trace(go.Scatterpolar(r=vals, theta=cats+[cats[0]],
+                                                name=SECTOR_SHORT.get(row["Sector"],row["Sector"]),
+                                                fill="toself", opacity=0.5))
+            fig_r.update_layout(height=420, template=DARK,
+                               polar=dict(radialaxis=dict(range=[0,1])),
+                               legend=dict(orientation="h",y=-0.15))
+            st.plotly_chart(fig_r, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MRIO ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "🌍 MRIO Analysis":
+    st.title("Multi-Regional Input-Output Analysis")
+    st.caption("8 regions × 8 sectors = 64-node system | Calibrated from GTAP v10 + HMRC OTS")
+
+    with st.spinner("Building MRIO model…"):
+        mrio = _mrio()
+        from mrio_model import REGIONS, REGION_LABELS
+
+    tab_va, tab_exp, tab_link, tab_shock = st.tabs(
+        ["💰 Value-Added","🇨🇳 China Exposure","🔗 Linkages","⚡ Regional Shock"])
+
+    with tab_va:
+        detail, summary = mrio.value_added_decomposition()
+
+        ca,cb = st.columns([2,3])
+        with ca:
+            st.subheader("VA by Region (UK demand origin)")
+            fig_va = go.Figure(go.Pie(
+                labels=summary["Region_Label"], values=summary["VA_GBP_bn"],
+                hole=0.4, textinfo="label+percent",
+                marker_color=["#e63946","#2a9d8f","#457b9d","#f4a261",
+                              "#264653","#7b1fa2","#1b5e20","#adb5bd"],
+            ))
+            fig_va.update_layout(height=380, template=DARK, showlegend=False)
+            st.plotly_chart(fig_va, use_container_width=True)
+
+        with cb:
+            st.subheader("Value-Added Heatmap (Region × Sector)")
+            pivot = detail.pivot_table(values="Value_Added_GBP", index="Region_Label",
+                                       columns="Sector", aggfunc="sum", fill_value=0)
+            fig_hm = px.imshow(pivot/1e9, template=DARK, height=380,
+                               color_continuous_scale="Blues",
+                               labels={"color":"VA £bn"},
+                               text_auto=".2f")
+            fig_hm.update_xaxes(tickangle=-45)
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+        st.subheader("Region Summary")
+        st.dataframe(summary[["Region_Label","VA_GBP_bn","VA_Share_%"]],
+                    use_container_width=True, hide_index=True)
+
+    with tab_exp:
+        exp = mrio.effective_china_exposure()
+        st.subheader("China Exposure by Supply Chain Stage")
+        if isinstance(exp, pd.DataFrame):
+            st.dataframe(exp, use_container_width=True, hide_index=True, height=300)
+
+            val_col = "MRIO_China_%" if "MRIO_China_%" in exp.columns else (
+                      "Effective_China_%" if "Effective_China_%" in exp.columns else None)
+            if val_col:
+                fig_exp = px.bar(exp.sort_values(val_col, ascending=False),
+                               x="Sector", y=val_col,
+                               template=DARK, height=300,
+                               color=val_col, color_continuous_scale="Reds",
+                               title="MRIO China Exposure by Stage (%)")
+                fig_exp.update_layout(xaxis_tickangle=-45, coloraxis_showscale=False)
+                st.plotly_chart(fig_exp, use_container_width=True)
+
+        mrio_png = FIG_DIR / "fig09_mrio_china_exposure.png"
+        if mrio_png.exists():
+            st.image(str(mrio_png), use_container_width=True)
+
+    with tab_link:
+        fwd = mrio.forward_linkages()
+        bwd = mrio.backward_linkages()
+        st.subheader("Top 15 — Forward Linkages (supply-critical region-sectors)")
+        st.dataframe(fwd.head(15), use_container_width=True, hide_index=True)
+        st.subheader("Top 15 — Backward Linkages (demand-critical)")
+        st.dataframe(bwd.head(15), use_container_width=True, hide_index=True)
+
+        mrio_va_png = FIG_DIR / "fig08_mrio_va_heatmap.png"
+        if mrio_va_png.exists():
+            st.image(str(mrio_va_png), use_container_width=True)
+
+    with tab_shock:
+        st.subheader("Interactive Regional Shock")
+        sc1,sc2,sc3 = st.columns(3)
+        shock_region  = sc1.selectbox("Shock region", REGIONS,
+                                      format_func=lambda r: REGION_LABELS[r])
+        shock_sector  = sc2.selectbox("Shock sector", SECTORS,
+                                      format_func=lambda s: SECTOR_SHORT.get(s,s))
+        shock_sev     = sc3.slider("Severity (%)", 5, 100, 50)
+
+        if st.button("▶ Run Regional Shock", type="primary"):
+            with st.spinner("Running MRIO shock…"):
+                from mrio_model import flat, REGION_IDX, SECTOR_IDX
+                fd_shocked = mrio.uk_final_demand()
+                shock_idx  = flat(shock_region, shock_sector)
+                x_base     = mrio.gross_output()
+                fd_s       = fd_shocked.copy()
+                # Apply shock as reduction to the production flat index
+                fd_s_mod   = mrio.uk_final_demand()
+                A_shocked  = mrio.A_mrio.copy()
+                r_idx = REGION_IDX[shock_region]
+                s_idx = SECTOR_IDX[shock_sector]
+                for j in range(mrio.A_mrio.shape[1]):
+                    A_shocked[r_idx*8+s_idx, j] *= (1 - shock_sev/100)
+
+                from numpy.linalg import inv
+                import numpy as np
+                L_sh = inv(np.eye(mrio.A_mrio.shape[0]) - A_shocked)
+                x_sh = L_sh @ mrio.uk_final_demand()
+                pct  = (x_sh - x_base) / (x_base + 1e-12) * 100
+
+                # Aggregate by sector
+                rows = []
+                for si, sec in enumerate(SECTORS):
+                    total_base = sum(x_base[ri*8+si] for ri in range(8))
+                    total_sh   = sum(x_sh[ri*8+si]   for ri in range(8))
+                    rows.append({"Sector":SECTOR_SHORT.get(sec,sec),
+                                 "Baseline":total_base,"Shocked":total_sh,
+                                 "Change_%":(total_sh-total_base)/(total_base+1e-12)*100})
+                df_sh = pd.DataFrame(rows)
+
+            fig_sh = go.Figure()
+            fig_sh.add_trace(go.Bar(x=df_sh["Sector"],y=df_sh["Baseline"],name="Baseline",
+                                   marker_color="#457b9d"))
+            fig_sh.add_trace(go.Bar(x=df_sh["Sector"],y=df_sh["Shocked"],name="Shocked",
+                                   marker_color="#e63946",opacity=0.85))
+            fig_sh.update_layout(barmode="group", height=360, template=DARK,
+                                yaxis_title="Gross output (normalised)",
+                                title=f"MRIO Shock: {REGION_LABELS[shock_region]} {shock_sector} −{shock_sev}%")
+            st.plotly_chart(fig_sh, use_container_width=True)
+
+            fig_chg = go.Figure(go.Bar(
+                x=df_sh["Sector"], y=df_sh["Change_%"],
+                marker_color=["#e63946" if v<0 else "#2a9d8f" for v in df_sh["Change_%"]],
+                text=[f"{v:.1f}%" for v in df_sh["Change_%"]], textposition="outside",
+            ))
+            fig_chg.update_layout(height=280, template=DARK, yaxis_title="% change")
+            st.plotly_chart(fig_chg, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GHOSH SUPPLY-PUSH
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "🔄 Ghosh Supply-Push":
+    st.title("Ghosh Supply-Push Analysis")
+    st.caption("Forward propagation of primary input constraints through the supply chain")
+
+    with st.spinner("Building Ghosh model…"):
+        ghosh = _ghosh()
+        from ghosh_model import GHOSH_SCENARIOS
+
+    tab_link, tab_quad, tab_sc = st.tabs(
+        ["📊 Forward Linkages","🎯 4-Quadrant Map","⚡ Supply Shock Scenarios"])
+
+    with tab_link:
+        fl = ghosh.forward_linkages()
+        ca,cb = st.columns(2)
+        with ca:
+            fig = px.bar(fl.sort_values("FL_Ghosh_Norm", ascending=True),
+                        x="FL_Ghosh_Norm", y="Sector", orientation="h",
+                        color="Supply_Critical",
+                        color_discrete_map={True:"#e63946", False:"#457b9d"},
+                        template=DARK, height=340,
+                        title="Ghosh Forward Linkage (normalised)",
+                        text="FL_Ghosh_Norm")
+            fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+            fig.add_vline(x=1.0, line_dash="dash", line_color="#94a3b8",
+                         annotation_text="Mean=1.0")
+            fig.update_layout(showlegend=False, margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+        with cb:
+            st.subheader("Value-Added by Stage (primary inputs)")
+            fig_va = px.bar(fl.sort_values("Value_Added_GBP", ascending=False),
+                           x="Sector", y="Value_Added_GBP",
+                           color="Supply_Critical",
+                           color_discrete_map={True:"#e63946",False:"#2a9d8f"},
+                           template=DARK, height=340,
+                           title="Primary Inputs (£ — ONS GVA rates)")
+            fig_va.update_layout(xaxis_tickangle=-45, showlegend=False)
+            st.plotly_chart(fig_va, use_container_width=True)
+
+        st.dataframe(fl, use_container_width=True, hide_index=True)
+
+    with tab_quad:
+        lv = ghosh.leontief_vs_ghosh_linkages()
+        fig_q = px.scatter(lv, x="BL_Norm", y="FL_Norm",
+                          text="Sector", color="Key_Sector",
+                          color_discrete_map={True:"#e63946",False:"#457b9d"},
+                          template=DARK, height=450,
+                          title="Leontief vs Ghosh Linkages — 4-Quadrant Map",
+                          labels={"BL_Norm":"Backward Linkage (demand-pull, normalised)",
+                                  "FL_Norm":"Forward Linkage (supply-push, normalised)"})
+        fig_q.update_traces(textposition="top center", marker=dict(size=14))
+        fig_q.add_vline(x=1.0, line_dash="dash", line_color="#475569")
+        fig_q.add_hline(y=1.0, line_dash="dash", line_color="#475569")
+        # Quadrant labels
+        for (tx,ty,label) in [(0.3,1.8,"Supply-push dominant"),
+                               (1.8,1.8,"Structurally central"),
+                               (0.3,0.3,"Peripheral"),
+                               (1.8,0.3,"Demand-pull dominant")]:
+            fig_q.add_annotation(x=tx, y=ty, text=label, showarrow=False,
+                               font=dict(color="#64748b",size=10))
+        st.plotly_chart(fig_q, use_container_width=True)
+
+        ghosh_png = FIG_DIR / "fig11_ghosh_linkage_quadrant.png"
+        if ghosh_png.exists():
+            with st.expander("View static figure"):
+                st.image(str(ghosh_png), use_container_width=True)
+
+    with tab_sc:
+        st.subheader("Ghosh Supply Shock Scenarios")
+        gs_sel = st.selectbox("Scenario", list(GHOSH_SCENARIOS.keys()),
+                             format_func=lambda k: f"{k}: {GHOSH_SCENARIOS[k]['name'][:55]}")
+        gs_sev = st.slider("Shock severity override (%)", 10, 100,
+                          int(list(GHOSH_SCENARIOS[gs_sel]["shocks"].values())[0]*100))
+
+        if st.button("▶ Run Ghosh Scenario", type="primary"):
+            with st.spinner("Running Ghosh scenario…"):
+                shocks = {k: gs_sev/100 for k in GHOSH_SCENARIOS[gs_sel]["shocks"]}
+                res_g  = ghosh.supply_shock(shocks)
+
+            pct = res_g["pct_change"]
+            fig_g = go.Figure()
+            fig_g.add_trace(go.Bar(
+                x=[SECTOR_SHORT.get(s,s) for s in SECTORS],
+                y=pct,
+                marker_color=["#e63946" if v<0 else "#2a9d8f" for v in pct],
+                text=[f"{v:.1f}%" for v in pct], textposition="outside",
+            ))
+            fig_g.update_layout(height=360, template=DARK,
+                               yaxis_title="% output change",
+                               title=f"{gs_sel}: {GHOSH_SCENARIOS[gs_sel]['name'][:60]}",
+                               margin=dict(l=0,r=0,t=50,b=0))
+            st.plotly_chart(fig_g, use_container_width=True)
+
+            loss = res_g["total_output_loss_gbp"]
+            st.metric("Total output loss", f"£{loss/1e9:.3f}bn")
+
+        # Compare all Ghosh scenarios
+        if st.button("📊 Compare All Ghosh Scenarios"):
+            with st.spinner("Running all Ghosh scenarios…"):
+                comp = ghosh.scenarios_comparison()
+            st.dataframe(comp, use_container_width=True)
+
+            ghosh_comp_png = FIG_DIR / "fig12_ghosh_scenarios.png"
+            if ghosh_comp_png.exists():
+                st.image(str(ghosh_comp_png), use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCENARIO SIMULATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "⚡ Scenario Simulator":
+    st.title("Supply Chain Shock Simulator")
+
+    from shocks import ALL_SCENARIOS, build_cge_supply_array, build_io_shock_schedule
+
+    with st.sidebar:
+        st.divider()
+        st.subheader("Simulation Controls")
+        sc_key    = st.selectbox("Scenario", list(SCENARIO_INFO.keys()),
+                                format_func=lambda k: f"{k}: {SCENARIO_INFO[k][0]}")
+        T_weeks   = st.slider("Simulation weeks", 12, 78, 52, step=4)
+        st_month  = st.slider("Start month", 1, 12, 1)
+        seas      = st.checkbox("HMRC seasonality", True)
+        run_btn   = st.button("▶ Run Simulation", type="primary", use_container_width=True)
+
+    sc_name, sc_desc = SCENARIO_INFO[sc_key]
+    st.info(f"**{sc_key}: {sc_name}**  \n{sc_desc}")
+
+    res_key = f"sim_{sc_key}_{T_weeks}_{st_month}_{seas}"
+
+    if run_btn:
+        with st.spinner(f"Running {sc_key} ({T_weeks} weeks)…"):
+            from abm_model import PolyesterSupplyChainABM
+            from cge_model import CGEModel
+            model    = _model()
+            scenario = ALL_SCENARIOS[sc_key]
+            io_sched = build_io_shock_schedule(scenario)
+            io_r     = model.io.simulate(T=T_weeks, final_demand_base=model.fd_base,
+                                        shock_schedule=io_sched)
+            cge_m    = CGEModel(tariff_schedule=scenario.tariffs) if scenario.tariffs else model.cge
+            supply   = build_cge_supply_array(scenario)
+            cge_r    = cge_m.equilibrium(supply_shocks=supply, final_demand=model.fd_base)
+            abm      = PolyesterSupplyChainABM(agents_per_sector=3)
+            abm_r    = abm.run(T=T_weeks, baseline_demand=1.0,
+                              shock_schedule=scenario.abm_schedule,
+                              demand_noise=0.03*float(cge_r["equilibrium_prices"].max()),
+                              start_month=st_month, apply_seasonality=seas)
+            st.session_state[res_key] = {
+                "io":io_r,"cge":cge_r,"abm":abm_r,
+                "bw":abm.bullwhip_ratio(abm_r),
+                "sl":abm.service_level(abm_r),
+                "rt":abm.recovery_time(abm_r),
+                "T":T_weeks, "onset":scenario.onset_week,
+            }
+
+    res = st.session_state.get(res_key)
+    if res is None:
+        st.info("Select a scenario and click **▶ Run Simulation** to begin.")
+        rows = [{"ID":k,"Name":n,"Description":d,
+                 "Onset wk":ALL_SCENARIOS[k].onset_week,
+                 "Duration wk":ALL_SCENARIOS[k].duration_weeks}
+                for k,(n,d) in SCENARIO_INFO.items()]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.stop()
+
+    io_r,cge_r,abm_r = res["io"],res["cge"],res["abm"]
+    bw,sl,rt,T_sim,onset = res["bw"],res["sl"],res["rt"],res["T"],res["onset"]
+    weeks = list(range(T_sim))
+
+    welfare  = cge_r["welfare_change_gbp"]
+    max_dp   = cge_r["price_index_change_pct"].max()
+    max_dp_s = SECTORS[int(cge_r["price_index_change_pct"].argmax())]
+    avg_rec  = rt["Recovery_Week"].dropna()
+    avg_rv   = f"{avg_rec.mean():.1f} wks" if len(avg_rec) else "—"
+
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("Welfare Change", f"£{welfare/1e9:.3f}bn", delta_color="inverse")
+    m2.metric("Max Price Rise",  f"{max_dp:.1f}%", SECTOR_SHORT.get(max_dp_s,max_dp_s))
+    m3.metric("IO Total Shortage", f"{float(io_r['shortage'].sum()):.3f}")
+    m4.metric("Mean Recovery", avg_rv)
+
+    tab_io, tab_cge, tab_abm, tab_met = st.tabs(
+        ["📊 I-O Output","💰 CGE Prices","🤖 ABM Dynamics","📋 Metrics"])
+
+    with tab_io:
+        out = io_r.get("output")
+        if out is not None and out.ndim==2:
+            fig_io = go.Figure()
+            for i,s in enumerate(SECTORS):
+                fig_io.add_trace(go.Scatter(x=weeks, y=out[:,i],
+                                           name=SECTOR_SHORT.get(s,s), mode="lines"))
+            fig_io.add_vline(x=onset, line_dash="dash", line_color="#e63946",
+                            annotation_text="Shock", annotation_font_color="#e63946")
+            fig_io.update_layout(height=380, template=DARK, yaxis_title="Output (norm.)",
+                                legend=dict(orientation="h",y=-0.2), hovermode="x unified")
+            st.plotly_chart(fig_io, use_container_width=True)
+
+        shr = io_r.get("shortage")
+        if shr is not None and shr.ndim==2 and shr.max()>1e-6:
+            fig_shr = go.Figure()
+            for i,s in enumerate(SECTORS):
+                if shr[:,i].max()>1e-6:
+                    fig_shr.add_trace(go.Scatter(x=weeks,y=shr[:,i],
+                                                name=SECTOR_SHORT.get(s,s),
+                                                fill="tozeroy",mode="lines"))
+            fig_shr.add_vline(x=onset, line_dash="dash", line_color="#e63946")
+            fig_shr.update_layout(height=280, template=DARK,
+                                 yaxis_title="Shortage (norm.)", hovermode="x unified")
+            st.plotly_chart(fig_shr, use_container_width=True)
+
+    with tab_cge:
+        pct    = cge_r["price_index_change_pct"]
+        prices = cge_r["equilibrium_prices"]
+        cp1,cp2 = st.columns(2)
+        with cp1:
+            fig_p = go.Figure(go.Bar(
+                x=[SECTOR_SHORT.get(s,s) for s in SECTORS], y=pct,
+                marker_color=["#e63946" if v>5 else "#e9c46a" if v>0 else "#2a9d8f" for v in pct],
+                text=[f"{v:.1f}%" for v in pct], textposition="outside",
+            ))
+            fig_p.update_layout(height=360, template=DARK,
+                               yaxis_title="% vs baseline",
+                               title="Price Changes by Sector")
+            st.plotly_chart(fig_p, use_container_width=True)
+        with cp2:
+            df_p = pd.DataFrame({"Sector":[SECTOR_SHORT.get(s,s) for s in SECTORS],
+                                 "Eq. Price":prices.round(4),"Change %":pct.round(2)})
+            st.dataframe(df_p.style.background_gradient(cmap="RdYlGn_r",subset=["Change %"]),
+                        use_container_width=True, height=360)
+            st.caption(f"{'✅' if cge_r.get('converged',True) else '⚠️'} "
+                      f"Converged in {cge_r.get('iterations','?')} iterations")
+
+    with tab_abm:
+        inv  = abm_r["inventory"]
+        ordr = abm_r["orders"]
+        fig_inv = go.Figure()
+        fig_ord = go.Figure()
+        for i,s in enumerate(SECTORS):
+            lbl = SECTOR_SHORT.get(s,s)
+            fig_inv.add_trace(go.Scatter(x=weeks,y=inv[:,i], name=lbl,mode="lines"))
+            fig_ord.add_trace(go.Scatter(x=weeks,y=ordr[:,i],name=lbl,mode="lines"))
+        for fig_ in [fig_inv,fig_ord]:
+            fig_.add_vline(x=onset,line_dash="dash",line_color="#e63946",
+                          annotation_text="Shock",annotation_font_color="#e63946")
+            fig_.update_layout(height=320,template=DARK,
+                               legend=dict(orientation="h",y=-0.25),
+                               hovermode="x unified")
+        fig_inv.update_layout(yaxis_title="Inventory level",title="Inventory Dynamics")
+        fig_ord.update_layout(yaxis_title="Order quantity",title="Orders (Bullwhip effect)")
+        st.plotly_chart(fig_inv, use_container_width=True)
+        st.plotly_chart(fig_ord, use_container_width=True)
+
+    with tab_met:
+        mc1,mc2,mc3 = st.columns(3)
+        mc1.subheader("Bullwhip")
+        mc1.dataframe(bw.style.background_gradient(cmap="Reds",subset=["Bullwhip_Ratio"]),
+                     use_container_width=True)
+        mc2.subheader("Service Level")
+        mc2.dataframe(sl.style.background_gradient(cmap="RdYlGn",subset=["Service_Level_%"]),
+                     use_container_width=True)
+        mc3.subheader("Recovery Time")
+        mc3.dataframe(rt, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALL SCENARIOS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "📋 All Scenarios":
+    st.title("All Scenarios — Comparison & Analysis")
+
+    from shocks import ALL_SCENARIOS
+
+    with st.sidebar:
+        st.divider()
+        T_all   = st.slider("Simulation weeks", 12, 78, 52, step=4, key="all_T")
+        run_all = st.button("▶ Run All Scenarios", type="primary", use_container_width=True)
+
+    if run_all:
+        model = _model()
+        prog  = st.progress(0, text="Running scenarios…")
+        all_results = {}
+        for i,(key,scenario) in enumerate(ALL_SCENARIOS.items()):
+            prog.progress((i)/5, text=f"Running {key}: {scenario.name}…")
+            all_results[key] = model.run_scenario(scenario, T=T_all, verbose=False)
+        prog.progress(1.0, text="Done.")
+        st.session_state["all_results"] = all_results
+        st.session_state["all_T"] = T_all
+
+    results = st.session_state.get("all_results")
+    if results is None:
+        st.info("Click **▶ Run All Scenarios** to run all five scenarios and compare results.")
+        # Static preview table
+        rows = [{"ID":k,"Name":n,"Onset wk":ALL_SCENARIOS[k].onset_week,
+                 "Duration wk":ALL_SCENARIOS[k].duration_weeks,"Description":d}
+                for k,(n,d) in SCENARIO_INFO.items()]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.stop()
+
+    # Build comparison table
+    model = _model()
+    comp  = model.comparison_table(results)
+
+    st.subheader("Cross-Scenario Comparison Table")
+    st.dataframe(
+        comp.style.background_gradient(cmap="RdYlGn_r", subset=["Max_Price_Rise_%","Economic_Loss_£bn"]),
+        use_container_width=True, hide_index=True,
+    )
+    st.download_button("⬇ Download comparison CSV", data=comp.to_csv(index=False),
+                      file_name="scenario_comparison.csv", mime="text/csv")
+
+    st.divider()
+
+    # Economic loss comparison bar
+    fig_loss = go.Figure(go.Bar(
+        x=comp["Scenario"],
+        y=comp["Economic_Loss_£bn"],
+        marker_color=["#e63946","#f4a261","#e9c46a","#2a9d8f","#457b9d"],
+        text=[f"£{v:.3f}bn" for v in comp["Economic_Loss_£bn"]],
+        textposition="outside",
+    ))
+    fig_loss.update_layout(height=320, template=DARK, yaxis_title="Economic Loss (£bn)",
+                          title="Economic Loss by Scenario",
+                          margin=dict(l=0,r=0,t=50,b=0))
+    st.plotly_chart(fig_loss, use_container_width=True)
+
+    # Price × welfare heatmap
+    col_a, col_b = st.columns(2)
+    with col_a:
+        fig_p = go.Figure(go.Bar(
+            x=comp["Scenario"], y=comp["Max_Price_Rise_%"],
+            marker_color="#e63946", text=[f"{v:.1f}%" for v in comp["Max_Price_Rise_%"]],
+            textposition="outside",
+        ))
+        fig_p.update_layout(height=300, template=DARK, yaxis_title="Max Price Rise %",
+                           title="Max CGE Price Rise")
+        st.plotly_chart(fig_p, use_container_width=True)
+
+    with col_b:
+        fig_w = go.Figure(go.Bar(
+            x=comp["Scenario"], y=comp["Welfare_Change_£bn"],
+            marker_color="#457b9d", text=[f"£{v:.3f}bn" for v in comp["Welfare_Change_£bn"]],
+            textposition="outside",
+        ))
+        fig_w.update_layout(height=300, template=DARK, yaxis_title="Welfare Change £bn",
+                           title="CGE Welfare Change")
+        st.plotly_chart(fig_w, use_container_width=True)
+
+    # Recovery time
+    fig_rec = go.Figure(go.Bar(
+        x=comp["Scenario"],
+        y=[float(v) if str(v).replace(".","").isdigit() else 0
+           for v in comp["Avg_Recovery_Weeks"]],
+        marker_color="#e9c46a",
+        text=comp["Avg_Recovery_Weeks"].astype(str), textposition="outside",
+    ))
+    fig_rec.update_layout(height=300, template=DARK, yaxis_title="Weeks",
+                         title="Average Recovery Time (ABM)")
+    st.plotly_chart(fig_rec, use_container_width=True)
+
+    # Per-scenario ABM inventory overlays
+    st.subheader("ABM Inventory Dynamics — All Scenarios")
+    sector_sel = st.selectbox("Sector to plot", SECTORS,
+                              format_func=lambda s: SECTOR_SHORT.get(s,s),
+                              key="all_sector")
+    s_idx = SECTORS.index(sector_sel)
+    fig_all = go.Figure()
+    for key, res in results.items():
+        inv = res["abm_result"]["inventory"]
+        onset = ALL_SCENARIOS[key].onset_week
+        fig_all.add_trace(go.Scatter(
+            x=list(range(len(inv))), y=inv[:,s_idx],
+            name=f"{key}: {SCENARIO_INFO[key][0][:25]}", mode="lines",
+        ))
+    fig_all.update_layout(height=380, template=DARK,
+                         yaxis_title=f"Inventory — {SECTOR_SHORT.get(sector_sel,sector_sel)}",
+                         legend=dict(orientation="h",y=-0.2), hovermode="x unified")
+    st.plotly_chart(fig_all, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "✅ Validation":
+    st.title("Model Validation Against HMRC Benchmarks")
+    st.caption("All benchmarks sourced from HMRC OTS API download — 2026-04-17")
+
+    from real_data import HMRC_VALIDATION_BENCHMARKS as VB
+
+    bench = [
+        {"Event":"V1 COVID-19 (2020)","Metric":"China import value",
+         "HMRC":f"{VB['V1_COVID_china_value_pct']:+.1f}%","Category":"Volume shock",
+         "Note":"Factory shutdowns Q1 2020"},
+        {"Event":"V1 COVID-19 (2020)","Metric":"Total UK synthetic apparel",
+         "HMRC":f"{VB['V1_COVID_total_value_pct']:+.1f}%","Category":"Volume shock","Note":"2019→2020"},
+        {"Event":"V5 Red Sea (Jan 2024)","Metric":"NON-EU imports",
+         "HMRC":f"{VB['V5_RedSea_jan_value_pct']:+.1f}%","Category":"Shipping","Note":"vs Jan 2023"},
+        {"Event":"V5 Red Sea (Feb 2024)","Metric":"NON-EU imports",
+         "HMRC":f"{VB['V5_RedSea_feb_value_pct']:+.1f}%","Category":"Shipping","Note":"vs Feb 2023"},
+        {"Event":"V5 Red Sea (Mar 2024)","Metric":"NON-EU imports",
+         "HMRC":f"{VB['V5_RedSea_mar_value_pct']:+.1f}%","Category":"Shipping","Note":"vs Mar 2023"},
+        {"Event":"V5 Red Sea (H1 2024)","Metric":"NON-EU H1",
+         "HMRC":f"{VB['V5_RedSea_H1_value_pct']:+.1f}%","Category":"Shipping","Note":"H1 2024 vs H1 2023"},
+        {"Event":"V6 Shanghai (2022 Q2)","Metric":"China import value",
+         "HMRC":f"{VB['V6_Shanghai_Q2_china_value_pct']:+.1f}%","Category":"Price/energy",
+         "Note":"Price-driven; energy crisis dominated supply disruption"},
+        {"Event":"V7 Ukraine (2022)","Metric":"Annual import value",
+         "HMRC":f"{VB['V7_Ukraine_annual_value_pct']:+.1f}%","Category":"Price shock","Note":"2022 vs 2021"},
+    ]
+    st.dataframe(pd.DataFrame(bench), use_container_width=True, hide_index=True, height=320)
+
+    st.divider()
+    annual = _annual()
+    totals = annual.groupby("Year")["Value"].sum().reset_index()
+    totals["YoY_%"] = totals["Value"].pct_change()*100
+
+    fig_yoy = go.Figure(go.Bar(
+        x=totals["Year"], y=totals["YoY_%"].fillna(0),
+        marker_color=["#e63946" if v<0 else "#2a9d8f" for v in totals["YoY_%"].fillna(0)],
+        text=[f"{v:.1f}%" for v in totals["YoY_%"].fillna(0)],
+        textposition="outside", textfont=dict(size=8),
+    ))
+    for yr,lbl in [(2008,"GFC"),(2016,"Brexit"),(2020,"COVID"),(2022,"Ukraine"),(2024,"Red Sea")]:
+        fig_yoy.add_vline(x=yr, line_dash="dot", line_color="#475569",
+                         annotation_text=lbl, annotation_font_size=9,
+                         annotation_font_color="#94a3b8", annotation_position="top")
+    fig_yoy.update_layout(height=380, template=DARK,
+                         title="YoY Change — UK Synthetic Apparel Imports (%)",
+                         yaxis_title="% YoY")
+    st.plotly_chart(fig_yoy, use_container_width=True)
+
+    dq1,dq2 = st.columns([1,2])
+    with dq1:
+        st.subheader("Data Quality (208 params)")
+        dq = pd.DataFrame({"Category":["REAL","DERIVED","ESTIMATED","EXTERNAL","ASSUMED"],
+                           "Count":[77,42,61,13,15]})
+        dq["Share%"] = (dq["Count"]/208*100).round(1)
+        st.dataframe(dq, use_container_width=True, hide_index=True)
+    with dq2:
+        fig_dq = go.Figure(go.Pie(
+            labels=dq["Category"], values=dq["Count"], hole=0.4,
+            marker_color=["#2a9d8f","#457b9d","#e9c46a","#264653","#e63946"],
+            textinfo="label+percent",
+        ))
+        fig_dq.update_layout(height=280, template=DARK, showlegend=False,
+                            margin=dict(l=0,r=0,t=10,b=0))
+        st.plotly_chart(fig_dq, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIGURE GALLERY
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "🖼️ Figure Gallery":
+    st.title("Figure Gallery")
+    st.caption("Static publication-quality figures generated by visualise.py")
+
+    col_run, col_info = st.columns([1,3])
+    with col_run:
+        gen_btn = st.button("⚙️ Generate All 49 Figures", type="primary",
+                           help="Runs visualise.py — takes ~60 seconds")
+    with col_info:
+        existing = list(FIG_DIR.glob("*.png")) if FIG_DIR.exists() else []
+        st.info(f"**{len(existing)} figures** currently in `results/figures/`")
+
+    if gen_btn:
+        prog = st.progress(0, text="Running visualise.py pipeline…")
+        placeholder = st.empty()
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(Path(__file__).parent / "visualise.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                cwd=str(Path(__file__).parent),
+            )
+            lines = []
+            for line in proc.stdout:
+                lines.append(line.rstrip())
+                placeholder.code("\n".join(lines[-20:]))
+                if "fig" in line.lower():
+                    done = sum(1 for l in lines if "png" in l)
+                    prog.progress(min(done/49, 0.99), text=f"Generated {done}/49 figures…")
+            proc.wait()
+            prog.progress(1.0, text="Done.")
+            if proc.returncode == 0:
+                st.success("All figures generated successfully.")
+            else:
+                st.error(f"Pipeline exited with code {proc.returncode}.")
+        except Exception as e:
+            st.error(f"Error running pipeline: {e}")
+
+    # ── Gallery viewer ────────────────────────────────────────────────────────
+    FIGURE_GROUPS = {
+        "Supply Chain Overview": [
+            ("fig00_supply_chain_geography.png", "Geographic supply chain flow"),
+            ("fig01_supply_chain_network.png",   "I-O network / China dependency"),
+            ("fig02_concentration_vulnerability.png","Concentration & vulnerability"),
+            ("fig03_resilience_scorecard.png",   "Resilience scorecard"),
+        ],
+        "HMRC Import Data": [
+            ("fig04_hmrc_import_trends.png",     "Annual import trends 2002-2024"),
+            ("fig05_hmrc_country_breakdown.png", "Country breakdown & unit prices"),
+            ("fig06_hmrc_seasonal_pattern.png",  "Monthly seasonal demand pattern"),
+            ("fig07_hmrc_validation_events.png", "HMRC validation benchmarks"),
+        ],
+        "MRIO Analysis": [
+            ("fig08_mrio_va_heatmap.png",        "Value-added heatmap (region × sector)"),
+            ("fig09_mrio_china_exposure.png",    "China exposure by stage"),
+            ("fig10_mrio_china_shock.png",       "MRIO China supply shock"),
+        ],
+        "Ghosh Supply-Push": [
+            ("fig11_ghosh_linkage_quadrant.png", "Forward vs backward linkage quadrant"),
+            ("fig12_ghosh_scenarios.png",        "Ghosh scenario comparison"),
+            ("fig13_ghosh_mrio_shock.png",       "Ghosh-MRIO combined shock"),
+        ],
+        "Scenario S1 — PTA Shock": [
+            ("fig14_S1_io_output.png",  "I-O output path"),
+            ("fig15_S1_cge_prices.png", "CGE price changes"),
+            ("fig16_S1_abm_dynamics.png","ABM inventory dynamics"),
+        ],
+        "Scenario S2 — MEG Disruption": [
+            ("fig14_S2_io_output.png",  "I-O output path"),
+            ("fig15_S2_cge_prices.png", "CGE price changes"),
+            ("fig16_S2_abm_dynamics.png","ABM inventory dynamics"),
+        ],
+        "Scenario S3 — UK-China Tariff": [
+            ("fig14_S3_io_output.png",  "I-O output path"),
+            ("fig15_S3_cge_prices.png", "CGE price changes"),
+            ("fig16_S3_abm_dynamics.png","ABM inventory dynamics"),
+        ],
+        "Scenario S4 — Port Closure": [
+            ("fig14_S4_io_output.png",  "I-O output path"),
+            ("fig15_S4_cge_prices.png", "CGE price changes"),
+            ("fig16_S4_abm_dynamics.png","ABM inventory dynamics"),
+        ],
+        "Scenario S5 — Pandemic": [
+            ("fig14_S5_io_output.png",  "I-O output path"),
+            ("fig15_S5_cge_prices.png", "CGE price changes"),
+            ("fig16_S5_abm_dynamics.png","ABM inventory dynamics"),
+        ],
+        "Cross-Scenario Comparison": [
+            ("fig17_scenario_comparison.png","Scenario comparison"),
+            ("fig18_recovery_time.png",      "Recovery time analysis"),
+        ],
+    }
+
+    if FIG_DIR.exists():
+        for group, figures in FIGURE_GROUPS.items():
+            available = [(fn,cap) for fn,cap in figures if (FIG_DIR/fn).exists()]
+            if not available:
+                continue
+            with st.expander(f"**{group}** ({len(available)}/{len(figures)} figures)", expanded=False):
+                ncols = min(len(available), 3)
+                cols  = st.columns(ncols)
+                for j,(fn,cap) in enumerate(available):
+                    cols[j % ncols].image(str(FIG_DIR/fn), caption=cap,
+                                         use_container_width=True)
+    else:
+        st.warning("No figures found. Click **Generate All 49 Figures** to create them.")

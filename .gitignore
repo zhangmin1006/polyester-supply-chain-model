@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.env
+.venv
+venv/
+env/
+
+# Data files (large / sensitive)
+model/data/*.csv
+model/data/*.json
+model/data/*.parquet
+model/results/
+
+# Generated figures
+model/figures/
+
+# Excel source data
+*.xlsx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Figure Gallery{% endblock %}
+{% set active = "gallery" %}
+{% block page_title %}Figure Gallery{% endblock %}
+{% block page_subtitle %}Generate and browse all model visualisations{% endblock %}
+{% block content %}
+<body data-page="gallery">
+
+<div class="card">
+  <div class="card-title">Generate Figures</div>
+  <div class="form-row" style="align-items:center">
+    <div class="form-group" style="flex:1">
+      <div style="font-size:.85rem;color:var(--text-muted)">
+        Runs <code>visualise.py</code> to regenerate all static figures. Takes 30–60 seconds.
+      </div>
+    </div>
+    <div class="form-group" style="flex-direction:row;gap:8px">
+      <button id="btn-generate" class="btn-primary-custom">
+        <i class="fa fa-refresh"></i> Generate All Figures
+      </button>
+    </div>
+  </div>
+  <div id="gen-status" style="display:none;margin-top:10px;font-size:.85rem;color:var(--text-muted)">
+    <i class="fa fa-spinner fa-spin"></i> Generation started — this runs in the background. Refresh the page in ~60 seconds.
+  </div>
+</div>
+
+<!-- Server-side rendered groups -->
+{% if total > 0 %}
+<div class="info-box">{{ total }} figure{{ 's' if total != 1 }} available. Click any image to enlarge.</div>
+{% else %}
+<div class="warn-box">No figures found yet. Click <strong>Generate All Figures</strong> above to create them.</div>
+{% endif %}
+
+{% for group_name, figs in groups.items() %}
+<div style="margin-bottom:28px">
+  <div class="card-title" style="margin-bottom:12px">{{ group_name }}</div>
+  <div class="gallery-grid">
+    {% for filename, title in figs %}
+    {% if avail.get(filename) %}
+    <div class="gallery-item">
+      <img src="/figures/{{ filename }}" alt="{{ title }}"
+           onclick="openLightbox('/figures/{{ filename }}','{{ title }}')">
+      <div class="gallery-caption">{{ title }}</div>
+    </div>
+    {% else %}
+    <div class="gallery-item" style="opacity:.4;cursor:default">
+      <div style="height:120px;display:flex;align-items:center;justify-content:center;background:var(--bg);border-radius:6px;color:var(--text-muted);font-size:.75rem">
+        <i class="fa fa-image" style="font-size:2rem;display:block;margin-bottom:6px"></i>
+      </div>
+      <div class="gallery-caption" style="color:var(--text-muted)">{{ title }}<br><small>Not yet generated</small></div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+<!-- Lightbox -->
+<div id="lightbox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:9999;flex-direction:column;align-items:center;justify-content:center;cursor:zoom-out" onclick="this.style.display='none'">
+  <div id="lb-title" style="font-size:.9rem;color:#ccc;margin-bottom:10px"></div>
+  <img id="lb-img" style="max-width:90vw;max-height:85vh;border-radius:8px;box-shadow:0 8px 40px #000">
+  <div style="color:#aaa;font-size:.75rem;margin-top:8px">Click anywhere to close</div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+window.openLightbox = function(src, title) {
+  document.getElementById('lb-title').textContent = title;
+  document.getElementById('lb-img').src = src;
+  document.getElementById('lightbox').style.display = 'flex';
+};
+
+document.getElementById('btn-generate').addEventListener('click', function() {
+  this.disabled = true;
+  this.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Starting…';
+  const status = document.getElementById('gen-status');
+  fetch('/api/gallery/generate', { method: 'POST' })
+    .then(r => r.json())
+    .then(() => {
+      status.style.display = '';
+      this.innerHTML = '<i class="fa fa-refresh"></i> Generate All Figures';
+      this.disabled = false;
+    })
+    .catch(() => {
+      this.innerHTML = '<i class="fa fa-refresh"></i> Generate All Figures';
+      this.disabled = false;
+    });
+});
+</script>
+{% endblock %}

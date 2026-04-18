@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Validation{% endblock %}
+{% set active = "validation" %}
+{% block page_title %}Model Validation{% endblock %}
+{% block page_subtitle %}HMRC OTS benchmarks · Historical backcasting · Data quality{% endblock %}
+{% block content %}
+<body data-page="validation">
+
+<div class="info-box">
+  All benchmarks sourced from HMRC OTS API download — 2026-04-17.
+  Figures show year-on-year changes in UK synthetic apparel imports for each historical event.
+</div>
+
+<div class="card">
+  <div class="card-title">HMRC Validation Benchmarks</div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr><th>Event</th><th>Metric</th><th>HMRC Actual</th><th>Category</th></tr>
+      </thead>
+      <tbody id="bench-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="chart-box">
+  <div class="chart-title">Year-on-Year Change — UK Synthetic Apparel Imports (%)</div>
+  <div id="chart-val-yoy" style="height:380px">
+    <div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-title">Data Quality — 208 Parameters</div>
+    <table class="data-table">
+      <thead><tr><th>Category</th><th>Count</th><th>Share %</th></tr></thead>
+      <tbody>
+        {% for cat, count, share in [
+          ('REAL (HMRC/ONS/GTAP)', 77, '37%'),
+          ('DERIVED',              42, '20%'),
+          ('ESTIMATED',            61, '29%'),
+          ('EXTERNAL',             13, '6%'),
+          ('ASSUMED',              15, '7%'),
+        ] %}
+        <tr>
+          <td>{{ cat }}</td>
+          <td>{{ count }}</td>
+          <td><span class="badge-pill {% if cat.startswith('REAL') %}badge-ok{% elif cat=='ASSUMED' %}badge-danger{% else %}badge-info{% endif %}">{{ share }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Priority Data Gaps</div>
+    <table class="data-table">
+      <thead><tr><th>Gap</th><th>Priority</th></tr></thead>
+      <tbody>
+        {% for gap, priority in [
+          ('WIOD bilateral flow matrices', 'P1 Critical'),
+          ('Bangladesh/Vietnam fabric dependency', 'P1 Critical'),
+          ('PTA/PET demand elasticities', 'P2 High'),
+          ('China GVA rates by stage', 'P2 High'),
+          ('UK wholesale inventory data', 'P3 Medium'),
+          ('Real-time MEG price series', 'P3 Medium'),
+          ('India IO table (English)', 'P4 Low'),
+        ] %}
+        <tr>
+          <td>{{ gap }}</td>
+          <td><span class="badge-pill {% if 'P1' in priority %}badge-danger{% elif 'P2' in priority %}badge-warn{% elif 'P3' in priority %}badge-info{% else %}badge-ok{% endif %}">{{ priority }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
