@@ -350,6 +350,75 @@ class DynamicIOModel:
             "T":          T,
         }
 
+    # ── Single-period step for coupled simulation ────────────────────────────
+
+    def io_step(self,
+                x_buf: np.ndarray,
+                buf_ptr: int,
+                capacity: np.ndarray,
+                fd: np.ndarray,
+                x_baseline: np.ndarray,
+                cap_recovery_mult: Optional[np.ndarray] = None,
+                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        One period of the dynamic IO model using a circular history buffer.
+
+        Parameters
+        ----------
+        x_buf            : (buf_len, n) circular buffer of past outputs.
+                           buf_ptr is the slot to WRITE x(t) into after this call.
+                           x(t-k) lives at x_buf[(buf_ptr - k) % buf_len].
+        buf_ptr          : write index for the current period (caller increments after).
+        capacity         : (n,) current capacity fractions — modified in-place (recovery).
+        fd               : (n,) final demand for this period.
+        x_baseline       : (n,) steady-state (t=0) output — used to cap actual output.
+        cap_recovery_mult: (n,) multiplier on base recovery rate from CGE prices.
+                           Pass None to use rate=1 (unmodulated).
+
+        Returns
+        -------
+        x_actual         : (n,) realised output this period
+        shortage         : (n,) unmet demand
+        supply_fractions : (n,) x_actual / x_baseline, clipped to [0, 1]
+        """
+        n      = self.n
+        buf_len = len(x_buf)
+        x_prev  = x_buf[(buf_ptr - 1) % buf_len]
+
+        # Extended-IO target (same formula as simulate())
+        x_static = self.L @ fd
+        dx_pos   = np.maximum(0.0, x_static - x_prev)
+        x_target = np.maximum(x_static + self.B @ dx_pos, 0.0)
+
+        # Lag-adjusted supply ratio
+        ratio = np.ones(n)
+        for j in range(n):
+            for i in range(n):
+                needed_ij = self.A[i, j] * x_target[j]
+                if needed_ij < 1e-12:
+                    continue
+                lag = int(self.lags[i, j])
+                if lag == 0:
+                    avail_ij = x_prev[i] * capacity[i]
+                else:
+                    avail_ij = x_buf[(buf_ptr - lag) % buf_len, i]
+                ratio[j] = min(ratio[j], avail_ij / needed_ij)
+
+        ratio    = np.clip(ratio, 0.0, 1.0)
+        x_actual = np.minimum(x_target * ratio, x_baseline * capacity)
+        shortage = np.maximum(0.0, x_target - x_actual)
+
+        # Capital-intensity-weighted capacity recovery (CGE price modulated)
+        B_diag = np.diag(self.B)
+        mult   = cap_recovery_mult if cap_recovery_mult is not None else np.ones(n)
+        for i in range(n):
+            if capacity[i] < 1.0:
+                base_rate   = 0.04 / (1.0 + 5.0 * B_diag[i])
+                capacity[i] = min(1.0, capacity[i] + base_rate * float(mult[i]))
+
+        supply_fractions = np.clip(x_actual / (x_baseline + 1e-12), 0.0, 1.0)
+        return x_actual, shortage, supply_fractions
+
     # ── Calibration report ────────────────────────────────────────────────────
 
     def calibration_report(self) -> pd.DataFrame:

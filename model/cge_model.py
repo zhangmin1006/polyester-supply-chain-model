@@ -347,6 +347,62 @@ class CGEModel:
             "shock_duration_weeks":   shock_duration_weeks,
         }
 
+    # ── Per-period price step for coupled simulation ──────────────────────────
+
+    def price_step(self,
+                   supply_fractions: np.ndarray,
+                   demand_mults: np.ndarray,
+                   prev_prices: np.ndarray,
+                   max_iter: int = 40,
+                   lambda_: float = 0.08,
+                   ) -> np.ndarray:
+        """
+        Lightweight per-period price update for the coupled IO × CGE × ABM loop.
+
+        Warm-starts tatonnement from prev_prices (already near-equilibrium) and
+        applies IO cost propagation each iteration. Skips the inventory-buffer
+        damping from equilibrium() — by the time this is called the shock is
+        ongoing and buffers are already depleted.
+
+        Parameters
+        ----------
+        supply_fractions : (n,) IO output / baseline — range [0, 1].
+        demand_mults     : (n,) ABM-derived demand multipliers (1 = baseline).
+        prev_prices      : (n,) prices from the previous period (warm start).
+        max_iter         : tatonnement iterations (40 sufficient near equilibrium).
+        lambda_          : price adjustment speed.
+
+        Returns
+        -------
+        (n,) updated equilibrium price vector for this period.
+        """
+        from io_model import A_BASE
+
+        P = prev_prices.copy()
+
+        for _ in range(max_iter):
+            ED = np.zeros(self.n)
+            for j in range(self.n):
+                sig  = self.sigma[SECTORS[j]]
+                dsh  = float(demand_mults[j])
+                D    = self.Q0[j] * dsh * (P[j] / self.P0[j]) ** (-sig)
+                S    = self.Q0[j] * float(supply_fractions[j])
+                ED[j] = D - S
+
+            P_new = P * (1.0 + lambda_ * ED / (self.Q0 + 1e-12))
+
+            # IO upstream cost propagation
+            for j in range(1, self.n):
+                cost_push = sum(A_BASE[i, j] * (P_new[i] - 1.0) for i in range(j))
+                P_new[j]  = max(P_new[j], 1.0 + cost_push)
+
+            P_new = np.clip(P_new, 0.3, 4.0)
+            if np.max(np.abs(P_new - P)) < 1e-6:
+                break
+            P = P_new
+
+        return P_new
+
     def _compute_trade_flows(self, P: np.ndarray,
                              supply_shocks: np.ndarray) -> pd.DataFrame:
         """

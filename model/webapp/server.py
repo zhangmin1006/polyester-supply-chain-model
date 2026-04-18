@@ -691,6 +691,117 @@ def api_scenario_run():
         "recovery_time":rt.to_dict(orient="records"),
     })
 
+@app.route("/api/integrated/coupled", methods=["POST"])
+def api_integrated_coupled():
+    """
+    Bidirectional coupled IO × CGE × ABM simulation per period.
+    Returns IO output path, CGE price path, and ABM orders path as Plotly charts.
+    """
+    from shocks import ALL_SCENARIOS
+
+    data     = request.json or {}
+    sc_key   = data.get("scenario", "S1")
+    T        = int(data.get("weeks", 52))
+    st_month = int(data.get("start_month", 1))
+    seasonal = bool(data.get("seasonality", True))
+
+    if sc_key not in ALL_SCENARIOS:
+        return _safe_jsonify({"error": f"Unknown scenario: {sc_key}"}), 400
+
+    model    = get_model()
+    scenario = ALL_SCENARIOS[sc_key]
+
+    result   = model.run_coupled(
+        scenario=scenario, T=T,
+        start_month=st_month, apply_seasonality=seasonal,
+    )
+
+    weeks  = list(range(T))
+    onset  = scenario.onset_week
+    io_r   = result["io_result"]
+    abm_r  = result["abm_result"]
+    out    = io_r["output"]
+    prices = io_r["prices"]
+    orders = abm_r["orders"]
+
+    def _vline(fig, row=None, col=None):
+        kw = dict(line_dash="dash", line_color="#e63946",
+                  annotation_text="Shock", annotation_font_color="#e63946")
+        if row is not None:
+            fig.add_vline(x=onset, row=row, col=col, **kw)
+        else:
+            fig.add_vline(x=onset, **kw)
+
+    # IO output chart
+    fig_io = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_io.add_trace(go.Scatter(x=weeks, y=out[:, i].tolist(),
+                                    name=SECTOR_SHORT.get(s, s), mode="lines"))
+    _vline(fig_io)
+    fig_io.update_layout(**_layout(yaxis_title="Output (norm.)", hovermode="x unified",
+                                   legend=dict(orientation="h", y=-0.2), height=380,
+                                   title="Coupled IO — Gross Output"))
+
+    # CGE price path chart (time-series, not bar — coupled run has full path)
+    fig_prices = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_prices.add_trace(go.Scatter(x=weeks, y=prices[:, i].tolist(),
+                                         name=SECTOR_SHORT.get(s, s), mode="lines"))
+    _vline(fig_prices)
+    fig_prices.update_layout(**_layout(yaxis_title="Price (index, 1=baseline)",
+                                        hovermode="x unified",
+                                        legend=dict(orientation="h", y=-0.2), height=360,
+                                        title="Coupled CGE — Price Path"))
+
+    # ABM orders chart (shows bullwhip amplification driven by CGE prices)
+    fig_abm = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_abm.add_trace(go.Scatter(x=weeks, y=orders[:, i].tolist(),
+                                      name=SECTOR_SHORT.get(s, s), mode="lines"))
+    _vline(fig_abm)
+    fig_abm.update_layout(**_layout(yaxis_title="Orders (norm.)", hovermode="x unified",
+                                     legend=dict(orientation="h", y=-0.2), height=360,
+                                     title="Coupled ABM — Agent Orders (CGE-price-driven)"))
+
+    # Supply fractions chart
+    sf    = result["coupled_supply_fracs"]
+    fig_sf = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_sf.add_trace(go.Scatter(x=weeks, y=sf[:, i].tolist(),
+                                     name=SECTOR_SHORT.get(s, s), mode="lines"))
+    _vline(fig_sf)
+    fig_sf.update_layout(**_layout(yaxis_title="Supply fraction (1=baseline)", height=340,
+                                    hovermode="x unified",
+                                    legend=dict(orientation="h", y=-0.2),
+                                    title="IO Supply Fractions → CGE & ABM Input"))
+
+    # KPIs
+    pct      = (prices[-1] - 1) * 100
+    max_p_i  = int(np.argmax(pct))
+    shortage = io_r["shortage"]
+    bw       = result["bullwhip"]
+    sl       = result["service_level"]
+    rt       = result["recovery_time"]
+    avg_rec  = rt["Recovery_Week"].dropna()
+
+    return _safe_jsonify({
+        "io_chart":      _fig_json(fig_io),
+        "price_chart":   _fig_json(fig_prices),
+        "abm_chart":     _fig_json(fig_abm),
+        "sf_chart":      _fig_json(fig_sf),
+        "kpis": {
+            "welfare":           f"£{result['welfare_gbp'] / 1e9:.3f}bn",
+            "max_price":         f"{pct.max():.1f}%",
+            "max_price_sector":  SECTOR_SHORT.get(SECTORS[max_p_i], ""),
+            "io_shortage":       f"{float(shortage.sum()):.3f}",
+            "avg_recovery":      f"{avg_rec.mean():.1f} wks" if len(avg_rec) else "—",
+        },
+        "bullwhip":      _clean_records(bw),
+        "service_level": _clean_records(sl),
+        "recovery_time": _clean_records(rt),
+        "scenario":      sc_key,
+    })
+
 @app.route("/api/scenarios/all", methods=["POST"])
 def api_scenarios_all():
     from shocks import ALL_SCENARIOS

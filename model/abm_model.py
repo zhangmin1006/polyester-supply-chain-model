@@ -361,6 +361,146 @@ class PolyesterSupplyChainABM:
             "T":          T,
         }
 
+    # ── Coupled-simulation helpers ────────────────────────────────────────────
+
+    def reset(self) -> None:
+        """
+        Restore all agent state to post-__post_init__ defaults.
+        Call before run_coupled() to get a clean simulation without
+        reconstructing the network.
+        """
+        for sector_agents in self.agents:
+            for ag in sector_agents:
+                ss_weeks           = SAFETY_STOCK_WEEKS.get(SECTORS[ag.sector_idx], 4.0)
+                ag.capacity        = ag.base_capacity
+                ag.safety_stock    = ag.base_capacity * ss_weeks
+                ag.inventory       = ag.safety_stock
+                ag.demand_forecast = ag.base_capacity
+                ag.backlog         = 0.0
+                ag.pipeline        = [0.0] * max(1, ag.lead_time)
+                ag.disrupted       = False
+                ag.disruption_remaining = 0
+                ag.total_shortage  = 0.0
+                ag.total_cost      = 0.0
+                ag.demand_history.clear()
+                ag.inventory_history.clear()
+                ag.order_history.clear()
+                ag.shortage_history.clear()
+                ag.price_history.clear()
+
+    def step_period(self,
+                    t: int,
+                    demand: float,
+                    external_prices: Optional[np.ndarray] = None,
+                    io_supply_ratios: Optional[np.ndarray] = None,
+                    demand_noise: float = 0.03,
+                    start_month: int = 1,
+                    apply_seasonality: bool = True,
+                    shock_schedule: Optional[Dict] = None,
+                    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        One period of the ABM with external CGE price signals and IO supply ratios.
+
+        Parameters
+        ----------
+        t                : period index (for seasonality calculation).
+        demand           : baseline demand scalar (= 1.0 normally).
+        external_prices  : (n,) CGE equilibrium prices — replaces the internal
+                           shortage-proxy price signal in agents' ordering decisions.
+        io_supply_ratios : (n,) IO supply fractions — modulates pipeline fill rate
+                           so IO shortfalls reduce how much agents actually receive.
+        shock_schedule   : same format as run() shock_schedule.
+
+        Returns
+        -------
+        agg_orders     : (n,) aggregate orders placed upstream by each sector
+        agg_shortage   : (n,) aggregate shortage per sector
+        agg_inventory  : (n,) aggregate inventory per sector
+        """
+        n = N_SECTORS
+
+        # Apply shocks
+        if shock_schedule and t in shock_schedule:
+            shock_list = shock_schedule[t]
+            if isinstance(shock_list, dict):
+                shock_list = [shock_list]
+            for shock in shock_list:
+                s_idx    = shock["sector"]
+                country  = shock.get("country", None)
+                severity = shock.get("severity", 0.8)
+                duration = shock.get("duration", 8)
+                for ag in self.agents[s_idx]:
+                    if country is None or ag.country == country:
+                        ag.apply_disruption(duration, severity)
+
+        # Demand realisation
+        noise = RNG.normal(0, demand_noise)
+        if apply_seasonality:
+            month_idx = ((start_month - 1 + (t * 7 // 30)) % 12)
+            seasonal  = HMRC_MONTHLY_SEASONAL_FACTORS[month_idx]
+        else:
+            seasonal = 1.0
+        realized_demand = demand * seasonal * (1 + noise)
+
+        agg_orders     = np.zeros(n)
+        agg_shortage   = np.zeros(n)
+        agg_inventory  = np.zeros(n)
+
+        downstream_demand = realized_demand
+
+        for s_idx in range(n - 1, -1, -1):
+            sector_agents = self.agents[s_idx]
+            if not sector_agents:
+                continue
+
+            total_cap = sum(ag.capacity for ag in sector_agents) + 1e-12
+
+            # CGE price signal for this sector (falls back to shortage proxy)
+            p_ext = float(external_prices[s_idx]) if external_prices is not None else None
+            # IO fill rate: how much of the pipeline order is delivered
+            fill  = float(io_supply_ratios[s_idx]) * 0.9 if io_supply_ratios is not None else 0.9
+            fill  = float(np.clip(fill, 0.0, 1.0))
+
+            sec_short = sec_ship = sec_inv = sec_ord = 0.0
+
+            for ag in sector_agents:
+                cap_share = ag.capacity / total_cap
+                ag_demand = downstream_demand * cap_share
+
+                inputs_avail = ag.inventory if s_idx > 0 else ag.base_capacity * 2
+                produced  = ag.produce(inputs_avail)
+                ag.inventory = max(0.0, ag.inventory - (ag_demand - produced))
+                ag.inventory += produced
+
+                shipped, shortage = ag.ship(ag_demand)
+                sec_short += shortage
+                sec_ship  += shipped
+                sec_inv   += ag.inventory
+
+                ag.recover()
+
+                # Price signal: external CGE or internal shortage proxy
+                p_sig = p_ext if p_ext is not None else (1.0 + shortage / (ag_demand + 1e-12))
+                ag.price = p_sig
+                order = ag.compute_order(ag_demand, p_sig)
+                sec_ord += order
+
+                ag.pipeline.append(order)
+                if len(ag.pipeline) > ag.lead_time + 5:
+                    ag.pipeline.pop(0)
+
+                if len(ag.pipeline) >= ag.lead_time:
+                    delivery = ag.pipeline[0] * fill
+                    ag.receive_delivery(delivery)
+
+            downstream_demand = sec_ord
+
+            agg_orders[s_idx]    = sec_ord
+            agg_shortage[s_idx]  = sec_short
+            agg_inventory[s_idx] = sec_inv
+
+        return agg_orders, agg_shortage, agg_inventory
+
     # ── Derived metrics ───────────────────────────────────────────────────────
 
     def bullwhip_ratio(self, results: Dict) -> pd.DataFrame:
