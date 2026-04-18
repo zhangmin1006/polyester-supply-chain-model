@@ -868,6 +868,8 @@ def api_io_simulate():
     output = r["output"]
     short  = r["shortage"]
     prices = r["prices"]
+    cap    = r["capacity"]
+    inv_d  = r["investment"]
     COLORS = ["#e63946", "#2a9d8f", "#457b9d", "#f4a261",
               "#264653", "#7b1fa2", "#e9c46a", "#adb5bd"]
 
@@ -889,15 +891,18 @@ def api_io_simulate():
                                     title=title, height=360))
         return fig
 
-    return jsonify({
-        "output_chart":   _fig_json(_ts(output, "Gross Output by Sector", "Output (norm.)")),
-        "shortage_chart": _fig_json(_ts(short,  "Supply Shortage by Sector", "Shortage (norm.)")),
-        "prices_chart":   _fig_json(_ts(prices, "IO Price Index by Sector", "Price (norm.)")),
+    baseline = output[0]
+    drop     = np.where(baseline > 0, 1 - output.min(axis=0) / (baseline + 1e-12), 0)
+    return _safe_jsonify({
+        "output_chart":     _fig_json(_ts(output, "Gross Output — Dynamic Leontief (1970)", "Output (norm.)")),
+        "shortage_chart":   _fig_json(_ts(short,  "Supply Shortage by Sector", "Shortage (norm.)")),
+        "prices_chart":     _fig_json(_ts(prices, "Price Index — Tatonnement", "Price (norm.)")),
+        "capacity_chart":   _fig_json(_ts(cap,    "Capacity Recovery (B-weighted)", "Capacity fraction")),
+        "investment_chart": _fig_json(_ts(inv_d,  "Investment Demand  B·Δx(t)", "Investment (norm.)")),
         "summary": {
             "total_shortage":  float(short.sum()),
-            "max_output_drop": float((1 - output.min(axis=0)).max()),
-            "most_affected":   SECTOR_SHORT.get(
-                SECTORS[int((1 - output.min(axis=0)).argmax())], ""),
+            "max_output_drop": float(drop.max() * 100),
+            "most_affected":   SECTOR_SHORT.get(SECTORS[int(drop.argmax())], ""),
         },
     })
 

@@ -522,7 +522,7 @@ async function initIO() {
       simBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Simulating…';
       document.getElementById('io-sim-results').style.display = '';
       initTabs('#io-sim-subtabs');
-      ['chart-io-sim-out','chart-io-sim-short','chart-io-sim-price'].forEach(id => spinner(id));
+      ['chart-io-sim-out','chart-io-sim-short','chart-io-sim-price','chart-io-sim-cap','chart-io-sim-inv'].forEach(id => spinner(id));
       const body = {
         sector_idx:    document.getElementById('io-sim-sector').value,
         shock_fraction: document.getElementById('io-sim-frac').value / 100,
@@ -539,11 +539,13 @@ async function initIO() {
         renderPlotly('chart-io-sim-out',   data.output_chart);
         renderPlotly('chart-io-sim-short', data.shortage_chart);
         renderPlotly('chart-io-sim-price', data.prices_chart);
+        renderPlotly('chart-io-sim-cap',   data.capacity_chart);
+        renderPlotly('chart-io-sim-inv',   data.investment_chart);
         const s = data.summary;
         document.getElementById('io-sim-kpi-shortage').textContent =
           parseFloat(s.total_shortage).toFixed(3);
         document.getElementById('io-sim-kpi-drop').textContent =
-          (parseFloat(s.max_output_drop) * 100).toFixed(1) + '%';
+          parseFloat(s.max_output_drop).toFixed(1) + '%';
         document.getElementById('io-sim-kpi-sector').textContent = s.most_affected || '—';
         document.getElementById('io-sim-kpi').style.display = '';
         toast('IO simulation complete', 'success');

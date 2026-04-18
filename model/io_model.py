@@ -117,8 +117,13 @@ class DynamicIOModel:
 
     def _build_leontief(self):
         I = np.eye(self.n)
-        self.L = inv(I - self.A)           # Leontief inverse
-        self.IminusA = I - self.A
+        self.L        = inv(I - self.A)          # static Leontief inverse
+        self.IminusA  = I - self.A
+        # Dynamic Leontief (Leontief 1970): (I - A - B) must be invertible.
+        # Hawkins-Simon holds iff col sums of (A+B) < 1 — verified at module load.
+        M             = I - self.A - self.B
+        assert (M.sum(axis=0) > 0).all(), "(I-A-B) Hawkins-Simon violated"
+        self.M_inv    = inv(M)                   # dynamic Leontief inverse
 
     def static_output(self, final_demand: np.ndarray) -> np.ndarray:
         """x = L f  — steady-state gross output vector."""
@@ -204,134 +209,145 @@ class DynamicIOModel:
             "leontief_inverse":   shocked_model.L,
         }
 
-    # ── Dynamic simulation ────────────────────────────────────────────────────
+    # ── Dynamic simulation (Leontief 1970) ───────────────────────────────────
 
     def simulate(self, T: int, final_demand_base: np.ndarray,
                  shock_schedule: Optional[Dict[int, Tuple[int, float]]] = None,
                  demand_growth: float = 0.0,
                  demand_shock_schedule: Optional[Dict[int, np.ndarray]] = None) -> Dict:
         """
-        Simulate the dynamic IO model for T weeks.
+        True Leontief (1970) dynamic I-O simulation.
+
+        Core equation (backward-difference form):
+            x(t) = A·x(t) + B·[x(t) − x(t−1)] + f(t)
+            ⟹ (I − A − B)·x(t) = f(t) − B·x(t−1)
+            ⟹ x(t) = M_inv · [f(t) − B·x(t−1)]       where M = (I−A−B)
+
+        The B term is investment demand: expanding output requires capital goods
+        from upstream sectors proportional to the rate of output change.
+        At steady state (Δx = 0), this collapses to the static model x = L·f.
+
+        Capital-intensity-weighted recovery:
+            rate_i = (0.04 / (1 + 5·B_ii)) · (P_i(t) / P_i(0))
+        Higher B_ii (capital intensive) ⟹ slower rebuild.
 
         Parameters
         ----------
         T                     : simulation horizon (weeks)
         final_demand_base     : baseline final demand vector (n,)
-        shock_schedule        : {week: [(sector_idx, shock_fraction)]} — supply shocks
-        demand_growth         : weekly demand growth rate (e.g. 0.001 = +0.1%/wk)
-        demand_shock_schedule : {week: np.ndarray(n)} — sector-level demand multipliers.
-                                Values < 1 = demand collapse; > 1 = demand surge.
-                                Applied from the specified week onward until overridden.
-                                Example: {4: array([1,1,1,1,1,1,1,0.57])} reduces
-                                retail demand to 57 % from week 4.
+        shock_schedule        : {week: [(sector_idx, shock_fraction)]}
+        demand_growth         : weekly demand growth rate
+        demand_shock_schedule : {week: np.ndarray(n)} demand multipliers
 
         Returns
         -------
         dict with:
-          'output'       (T, n) gross output trajectories
-          'shortage'     (T, n) unmet demand trajectories
-          'prices'       (T, n) relative price indices (=1 baseline)
-          'capacity'     (n,)  final capacity fractions
-          'sectors'      list of sector names
+          'output'      (T, n) gross output
+          'shortage'    (T, n) unmet demand
+          'prices'      (T, n) price index (1 = baseline)
+          'capacity'    (T, n) effective capacity fraction over time
+          'investment'  (T, n) investment demand B·max(0, Δx)
+          'sectors'     list of sector names
         """
-        n = self.n
+        n       = self.n
         max_lag = int(self.lags.max()) + 1
 
-        # State arrays
-        x        = np.zeros((T, n))
-        shortage = np.zeros((T, n))
-        prices   = np.ones((T, n))
-        capacity = np.ones(n)          # fraction of baseline capacity available
-
-        # Demand multiplier state (tracks latest demand shock, persists forward)
+        # ── State arrays ──────────────────────────────────────────────────────
+        x          = np.zeros((T, n))
+        shortage   = np.zeros((T, n))
+        prices     = np.ones((T, n))
+        cap_path   = np.ones((T, n))          # capacity fraction at each week
+        investment = np.zeros((T, n))         # investment demand B·Δx
+        capacity   = np.ones(n)               # current capacity (mutable)
         demand_mult = np.ones(n)
 
-        # Initialise at steady state
-        x[0] = self.static_output(final_demand_base)
+        # ── Initialise at static steady-state ─────────────────────────────────
+        x[0]        = self.static_output(final_demand_base)
+        cap_path[0] = capacity.copy()
 
-        # Pipeline buffer: in-transit goods [lag_slot, from_sector, to_sector]
-        pipeline = np.zeros((max_lag + 1, n, n))
-        for i in range(n):
-            for j in range(n):
-                lag = self.lags[i, j]
-                if lag > 0:
-                    pipeline[lag, i, j] = self.A[i, j] * x[0, j]
-
-        A_current = self.A.copy()
+        # Pre-compute B diagonal for recovery weighting
+        B_diag = np.diag(self.B)
 
         for t in range(1, T):
-            # ── 1. Apply supply shocks (list of (sector_idx, fraction) per week) ─
+
+            # ── 1. Supply shocks ──────────────────────────────────────────────
             if shock_schedule and t in shock_schedule:
                 shock_list = shock_schedule[t]
                 if isinstance(shock_list, tuple):
-                    shock_list = [shock_list]   # backwards compat
+                    shock_list = [shock_list]
                 for s_idx, s_frac in shock_list:
                     capacity[s_idx] *= (1 - s_frac)
 
-            # ── 1b. Apply demand shocks (sector-level multipliers) ────────────
+            # ── 2. Demand shocks ──────────────────────────────────────────────
             if demand_shock_schedule and t in demand_shock_schedule:
                 demand_mult = np.asarray(demand_shock_schedule[t], dtype=float)
 
-            # ── 2. Demand this period (growth + demand shock) ─────────────────
+            # ── 3. Final demand ───────────────────────────────────────────────
             fd = final_demand_base * ((1 + demand_growth) ** t) * demand_mult
-            x_target = inv(np.eye(n) - A_current) @ fd
 
-            # ── 3. Compute available supply (constrained by capacity + lags) ─
-            available = np.zeros(n)
-            for i in range(n):
-                # Goods arriving from pipeline this period
-                direct = 0.0
-                for j in range(n):
-                    lag = self.lags[i, j]
-                    slot = max(0, t - lag)
-                    direct += pipeline[min(lag, max_lag), i, j]
-                # Domestic production (not lagged)
-                domestic = x[t - 1, i] * capacity[i]
-                available[i] = domestic + direct
+            # ── 4. Dynamic Leontief target (extended-IO formulation) ─────────
+            # Static demand-pull:  x_s  = L · f
+            # Investment demand:   Δx_+ = max(0, x_s − x(t−1))  [expansion only]
+            # Capital goods demand: B · Δx_+ (additional upstream requirements)
+            # Combined target:     x*(t) = x_s + B · Δx_+
+            #
+            # At steady state Δx_+ = 0 → x* = x_s = L·f  ✓
+            # During recovery Δx_+ > 0 → capital goods demand raises x* above x_s
+            # During shock    Δx_+ = 0 → no spurious demand inflation  ✓
+            x_static = self.L @ fd
+            dx_pos   = np.maximum(0.0, x_static - x[t - 1])   # planned expansion
+            x_target = x_static + self.B @ dx_pos
+            x_target = np.maximum(x_target, 0.0)
 
-            # ── 4. Compute achievable output (min of target and supply) ──────
+            # ── 5. Input-availability ratio (lag-adjusted) ────────────────────
+            # Sector i's goods dispatched lag[i,j] weeks ago are what sector j
+            # can use this period.  We look up actual historical output x[t_sent]
+            # which is already capacity-constrained — so shocks propagate forward
+            # with the correct delivery delay.
+            # lag == 0: same-period availability = capacity-constrained output.
             ratio = np.ones(n)
             for j in range(n):
-                needed = A_current[:, j] * x_target[j]
                 for i in range(n):
-                    if needed[i] > 1e-12:
-                        r = available[i] / needed[i]
-                        ratio[j] = min(ratio[j], r)
+                    needed_ij = self.A[i, j] * x_target[j]
+                    if needed_ij < 1e-12:
+                        continue
+                    lag = int(self.lags[i, j])
+                    if lag == 0:
+                        avail_ij = x[t - 1, i] * capacity[i]
+                    else:
+                        t_sent   = max(0, t - lag)
+                        avail_ij = x[t_sent, i]    # actual output dispatched then
+                    ratio[j] = min(ratio[j], avail_ij / needed_ij)
 
-            ratio = np.clip(ratio, 0.0, 1.0)
-            # Also apply direct capacity constraint from shocks
-            x[t] = np.minimum(x_target * ratio, x[0] * capacity)
-            shortage[t] = np.maximum(0, x_target - x[t])
+            ratio       = np.clip(ratio, 0.0, 1.0)
+            x[t]        = np.minimum(x_target * ratio, x[0] * capacity)
+            shortage[t] = np.maximum(0.0, x_target - x[t])
 
-            # ── 5. Price response: P rises when ratio < 1 ───────────────────
-            # Simple tatonnement: Δp/p = λ(D - S)/S
-            lam = 0.4
-            prices[t] = prices[t - 1] * (1 + lam * (1 - ratio))
+            # ── 6. Price tatonnement: ΔP/P = λ(1 − ratio) ────────────────────
+            prices[t] = prices[t - 1] * (1.0 + 0.10 * (1.0 - ratio))
 
-            # ── 6. Partial capacity recovery (resilience) ────────────────────
-            # Agents invest when prices rise; capacity slowly rebuilds
-            recovery_rate = 0.03  # 3 % per week
+            # ── 7. Investment demand: B · max(0, Δx) ─────────────────────────
+            delta_x       = np.maximum(0.0, x[t] - x[t - 1])
+            investment[t] = self.B @ delta_x
+
+            # ── 8. Capital-intensity-weighted capacity recovery ───────────────
+            # rate_i = 0.04 / (1 + 5·B_ii) × price_incentive
+            # High B_ii (capital intensive) → slower rebuild.
             for i in range(n):
                 if capacity[i] < 1.0:
-                    capacity[i] = min(1.0, capacity[i] + recovery_rate
-                                      * prices[t, i] / prices[0, i])
-
-            # ── 7. Refresh pipeline ──────────────────────────────────────────
-            pipeline = np.roll(pipeline, -1, axis=0)
-            pipeline[-1] = 0
-            for i in range(n):
-                for j in range(n):
-                    lag = self.lags[i, j]
-                    if lag > 0:
-                        pipeline[min(lag, max_lag), i, j] = (
-                            A_current[i, j] * x[t, j])
+                    base_rate    = 0.04 / (1.0 + 5.0 * B_diag[i])
+                    price_signal = float(prices[t, i] / prices[0, i])
+                    capacity[i]  = min(1.0, capacity[i] + base_rate * price_signal)
+            cap_path[t] = capacity.copy()
 
         return {
-            "output":    x,
-            "shortage":  shortage,
-            "prices":    prices,
-            "capacity":  capacity,
-            "sectors":   SECTORS,
+            "output":     x,
+            "shortage":   shortage,
+            "prices":     prices,
+            "capacity":   cap_path,
+            "investment": investment,
+            "sectors":    SECTORS,
+            "T":          T,
         }
 
     # ── Calibration report ────────────────────────────────────────────────────

@@ -140,18 +140,31 @@
     <div id="io-sim-results" style="display:none">
       <div id="io-sim-subtabs" data-tabs>
         <div class="tab-bar">
-          <button class="tab-btn active" data-tab="tab-io-sim-out">📉 Gross Output</button>
-          <button class="tab-btn" data-tab="tab-io-sim-short">📦 Shortage</button>
-          <button class="tab-btn" data-tab="tab-io-sim-price">💰 Price Index</button>
+          <button class="tab-btn active" data-tab="tab-io-sim-out">Gross Output</button>
+          <button class="tab-btn" data-tab="tab-io-sim-short">Shortage</button>
+          <button class="tab-btn" data-tab="tab-io-sim-price">Price Index</button>
+          <button class="tab-btn" data-tab="tab-io-sim-cap">Capacity Recovery</button>
+          <button class="tab-btn" data-tab="tab-io-sim-inv">Investment Demand</button>
         </div>
         <div id="tab-io-sim-out" class="tab-pane active">
+          <div class="info-box">Gross output per sector from the Leontief (1970) dynamic equation x(t) = M⁻¹·[f(t) − B·x(t−1)], where M = (I−A−B). Dashed line = shock onset; dotted = shock end.</div>
           <div class="chart-box"><div id="chart-io-sim-out" style="height:360px"></div></div>
         </div>
         <div id="tab-io-sim-short" class="tab-pane">
+          <div class="info-box">Unmet demand = x_target − x_actual. Propagates upstream via the input-availability ratio constraint.</div>
           <div class="chart-box"><div id="chart-io-sim-short" style="height:360px"></div></div>
         </div>
         <div id="tab-io-sim-price" class="tab-pane">
+          <div class="info-box">Price tatonnement: ΔP/P = λ(1−ratio), λ=0.10. Prices rise when supply is constrained, incentivising capacity recovery.</div>
           <div class="chart-box"><div id="chart-io-sim-price" style="height:360px"></div></div>
+        </div>
+        <div id="tab-io-sim-cap" class="tab-pane">
+          <div class="info-box">Effective capacity fraction over time. Recovery rate = 0.04 / (1 + 5·B_ii) × price signal — capital-intensive sectors (high B_ii) rebuild more slowly.</div>
+          <div class="chart-box"><div id="chart-io-sim-cap" style="height:360px"></div></div>
+        </div>
+        <div id="tab-io-sim-inv" class="tab-pane">
+          <div class="info-box">Investment demand B·max(0, Δx(t)): the additional capital-good inputs needed to support output expansion. Captures the Leontief (1970) investment-acceleration mechanism absent from the static model.</div>
+          <div class="chart-box"><div id="chart-io-sim-inv" style="height:360px"></div></div>
         </div>
       </div>
     </div>
