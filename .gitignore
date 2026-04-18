@@ -12,11 +12,11 @@ build/
 venv/
 env/
 
-# Data files (large / sensitive)
-model/data/*.csv
-model/data/*.json
-model/data/*.parquet
+# Generated outputs
 model/results/
+
+# Raw data kept large/local only
+model/data/*.parquet
 
 # Generated figures
 model/figures/
