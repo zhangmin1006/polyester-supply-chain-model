@@ -8,7 +8,7 @@ Run:
     → http://localhost:5000
 """
 
-import sys, os, json, threading, subprocess
+import sys, os, json, threading, subprocess, math
 from pathlib import Path
 from functools import lru_cache
 
@@ -90,6 +90,18 @@ def _eu_nn():   return pd.read_csv(DATA_DIR / "hmrc_monthly_eu_noneu.csv")
 def _fig_json(fig):
     """Serialize Plotly figure to JSON-serialisable dict."""
     return json.loads(fig.to_json())
+
+def _clean_records(df):
+    """Convert DataFrame to JSON-safe list of dicts — NaN/inf become None."""
+    def _safe(v):
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        if hasattr(v, "item"):          # numpy scalar
+            v = v.item()
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+        return v
+    return [{k: _safe(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
 
 def _layout(**kw):
     return dict(template=DARK, margin=dict(l=10,r=10,t=40,b=10),
@@ -1152,14 +1164,14 @@ def api_abm_run():
         "bullwhip_chart":  _fig_json(fig_bw),
         "service_chart":   _fig_json(fig_sl),
         "recovery_chart":  _fig_json(fig_rt),
-        "bullwhip_table":  bw.to_dict(orient="records"),
-        "service_table":   sl.to_dict(orient="records"),
-        "recovery_table":  rt.to_dict(orient="records"),
+        "bullwhip_table":  _clean_records(bw),
+        "service_table":   _clean_records(sl),
+        "recovery_table":  _clean_records(rt),
         "summary": {
             "total_shortage": float(short.sum()),
             "avg_service":    float(sl["Service_Level_%"].mean()),
-            "avg_recovery":   f"{avg_rec.mean():.1f} wks" if len(avg_rec) else "—",
-            "max_bullwhip":   float(bw["Bullwhip_Ratio"].max()),
+            "avg_recovery":   f"{avg_rec.mean():.1f} wks" if len(avg_rec) and not math.isnan(avg_rec.mean()) else "—",
+            "max_bullwhip":   float(bw["Bullwhip_Ratio"].max()) if not bw.empty else 0.0,
         },
     })
 
