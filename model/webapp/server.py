@@ -46,7 +46,7 @@ COUNTRY_COLORS = {
 }
 HMRC_SEASONAL = [0.993,0.909,1.026,0.941,0.963,0.963,1.052,1.062,1.099,1.145,0.977,0.871]
 MONTHS        = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-DARK          = "plotly_dark"
+DARK          = "plotly_white"
 SCENARIO_NAMES = {
     "S1":"PTA Production Shock",
     "S2":"MEG Supply Disruption",
@@ -167,10 +167,6 @@ def scenarios():
                 "desc":v.description[:120]+"…"}
                for k,v in ALL_SCENARIOS.items()]
     return render_template("scenarios.html", scenarios=sc_list)
-
-@app.route("/validation")
-def validation():
-    return render_template("validation.html")
 
 @app.route("/gallery")
 def gallery():
@@ -729,28 +725,6 @@ def api_scenarios_all():
 # API — VALIDATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-@app.route("/api/validation")
-def api_validation():
-    from real_data import HMRC_VALIDATION_BENCHMARKS as VB
-    bench = [
-        {"event":"V1 COVID-19 (2020)","metric":"China import value",
-         "hmrc":f"{VB['V1_COVID_china_value_pct']:+.1f}%","category":"Volume shock"},
-        {"event":"V1 COVID-19 (2020)","metric":"Total UK synthetic apparel",
-         "hmrc":f"{VB['V1_COVID_total_value_pct']:+.1f}%","category":"Volume shock"},
-        {"event":"V5 Red Sea (Jan 2024)","metric":"NON-EU imports",
-         "hmrc":f"{VB['V5_RedSea_jan_value_pct']:+.1f}%","category":"Shipping"},
-        {"event":"V5 Red Sea (Feb 2024)","metric":"NON-EU imports",
-         "hmrc":f"{VB['V5_RedSea_feb_value_pct']:+.1f}%","category":"Shipping"},
-        {"event":"V5 Red Sea (Mar 2024)","metric":"NON-EU imports",
-         "hmrc":f"{VB['V5_RedSea_mar_value_pct']:+.1f}%","category":"Shipping"},
-        {"event":"V5 Red Sea (H1 2024)","metric":"NON-EU H1",
-         "hmrc":f"{VB['V5_RedSea_H1_value_pct']:+.1f}%","category":"Shipping"},
-        {"event":"V6 Shanghai (Q2 2022)","metric":"China import value",
-         "hmrc":f"{VB['V6_Shanghai_Q2_china_value_pct']:+.1f}%","category":"Price/energy"},
-        {"event":"V7 Ukraine (2022)","metric":"Annual import value",
-         "hmrc":f"{VB['V7_Ukraine_annual_value_pct']:+.1f}%","category":"Price shock"},
-    ]
-    return jsonify({"benchmarks": bench})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
