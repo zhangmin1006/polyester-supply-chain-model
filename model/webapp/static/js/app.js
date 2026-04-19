@@ -305,6 +305,8 @@ async function initGhosh() {
 function initScenarios() {
   initTabs('#result-tabs');
   bindRange('sim-weeks','weeks-display');
+  initCoupledButton();
+  initGSButton();
 
   const form   = document.getElementById('scenario-form');
   const runBtn = document.getElementById('btn-run-scenario');
@@ -392,6 +394,127 @@ function initScenarios() {
       allBtn.innerHTML = '<i class="fa fa-play"></i> Run All Scenarios';
     });
   }
+}
+
+// ── Bidirectional Coupled button ─────────────────────────────────────────────
+function initCoupledButton() {
+  const cpBtn = document.getElementById('btn-run-coupled');
+  if (!cpBtn) return;
+
+  cpBtn.addEventListener('click', async () => {
+    const sc       = document.getElementById('sel-scenario').value;
+    const weeks    = document.getElementById('sim-weeks').value;
+    const stMonth  = document.getElementById('sim-start-month').value;
+    const seasonal = document.getElementById('sim-seasonal').checked;
+
+    cpBtn.disabled = true;
+    cpBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running coupled…';
+    document.getElementById('coupled-result-section').style.display = '';
+    initTabs('#cp-result-tabs');
+    ['cp-chart-io','cp-chart-prices','cp-chart-sf','cp-chart-abm'].forEach(id => spinner(id));
+
+    try {
+      const res  = await fetch('/api/integrated/coupled', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ scenario: sc, weeks, start_month: stMonth, seasonality: seasonal }),
+      });
+      const data = await res.json();
+      if (data.error) { toast('Coupled error: ' + data.error, 'error'); return; }
+
+      // KPIs
+      const k = data.kpis;
+      document.getElementById('cp-kpi-welfare').textContent  = k.welfare;
+      document.getElementById('cp-kpi-price').textContent    = k.max_price + ' · ' + k.max_price_sector;
+      document.getElementById('cp-kpi-shortage').textContent = k.io_shortage;
+      document.getElementById('cp-kpi-recovery').textContent = k.avg_recovery;
+
+      // Charts
+      renderPlotly('cp-chart-io',     data.io_chart);
+      renderPlotly('cp-chart-prices', data.price_chart);
+      renderPlotly('cp-chart-sf',     data.sf_chart);
+      renderPlotly('cp-chart-abm',    data.abm_chart);
+
+      // Metrics tables
+      renderTable('cp-table-bullwhip', data.bullwhip,
+        ['Sector','Order_Variance','Bullwhip_Ratio']);
+      renderTable('cp-table-service', data.service_level,
+        ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
+      renderTable('cp-table-recovery', data.recovery_time,
+        ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
+
+      toast(`Coupled (${sc}) complete — welfare ${k.welfare}`, 'success');
+    } catch(e) { toast('Coupled error: ' + e.message, 'error'); }
+
+    cpBtn.disabled = false;
+    cpBtn.innerHTML = '<i class="fa fa-play"></i> Run Coupled';
+  });
+}
+
+// ── Gauss–Seidel button (wired inside initScenarios) ────────────────────────
+function initGSButton() {
+  const gsBtn = document.getElementById('btn-run-gs');
+  if (!gsBtn) return;
+
+  // wire lambda range display
+  const gsLambdaEl = document.getElementById('gs-lambda');
+  const gsLambdaDisp = document.getElementById('gs-lambda-display');
+  if (gsLambdaEl && gsLambdaDisp) {
+    gsLambdaEl.addEventListener('input', () => {
+      gsLambdaDisp.textContent = parseFloat(gsLambdaEl.value).toFixed(2);
+    });
+  }
+
+  gsBtn.addEventListener('click', async () => {
+    const sc       = document.getElementById('sel-scenario').value;
+    const weeks    = document.getElementById('sim-weeks').value;
+    const lambdaA  = parseFloat(document.getElementById('gs-lambda').value);
+    const maxInner = parseInt(document.getElementById('gs-max-inner').value);
+
+    gsBtn.disabled = true;
+    gsBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running GS…';
+    document.getElementById('gs-result-section').style.display = '';
+    initTabs('#gs-result-tabs');
+
+    try {
+      const res  = await fetch('/api/integrated/coupled_gs', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ scenario:sc, weeks, lambda_A:lambdaA, max_inner:maxInner }),
+      });
+      const data = await res.json();
+      if (data.error) { toast('GS error: ' + data.error, 'error'); return; }
+
+      // KPIs
+      const k = data.kpis;
+      document.getElementById('gs-kpi-welfare').textContent  = k.welfare;
+      document.getElementById('gs-kpi-price').textContent    = k.max_price + ' · ' + k.max_price_sector;
+      document.getElementById('gs-kpi-shortage').textContent = k.io_shortage;
+      document.getElementById('gs-kpi-iters').textContent    = k.gs_mean_iters + ' / ' + k.gs_max_iters;
+      document.getElementById('gs-kpi-drift').textContent    = k.A_drift_final;
+
+      // Charts
+      renderPlotly('gs-chart-io',     data.io_chart);
+      renderPlotly('gs-chart-prices', data.price_chart);
+      renderPlotly('gs-chart-abm',    data.abm_chart);
+      renderPlotly('gs-chart-sf',     data.sf_chart);
+      renderPlotly('gs-chart-gs',     data.gs_chart);
+      renderPlotly('gs-chart-A',      data.A_chart);
+
+      // Tables
+      renderTable('gs-table-bullwhip', data.bullwhip,
+        ['Sector','Order_Variance','Bullwhip_Ratio']);
+      renderTable('gs-table-service', data.service_level,
+        ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
+      renderTable('gs-table-recovery', data.recovery_time,
+        ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
+
+      toast(`GS simulation (${sc}) complete — mean ${k.gs_mean_iters} iters`, 'success');
+    } catch(e) { toast('GS error: ' + e.message, 'error'); }
+
+    gsBtn.disabled = false;
+    gsBtn.innerHTML = '<i class="fa fa-play"></i> Run GS Simulation';
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

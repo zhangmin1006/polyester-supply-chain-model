@@ -775,8 +775,8 @@ def api_integrated_coupled():
                                     legend=dict(orientation="h", y=-0.2),
                                     title="IO Supply Fractions → CGE & ABM Input"))
 
-    # KPIs
-    pct      = (prices[-1] - 1) * 100
+    # KPIs — use avg-price pct from cge_result (welfare bug fix: avg not final-period)
+    pct      = result["cge_result"]["price_index_change_pct"]
     max_p_i  = int(np.argmax(pct))
     shortage = io_r["shortage"]
     bw       = result["bullwhip"]
@@ -791,7 +791,7 @@ def api_integrated_coupled():
         "sf_chart":      _fig_json(fig_sf),
         "kpis": {
             "welfare":           f"£{result['welfare_gbp'] / 1e9:.3f}bn",
-            "max_price":         f"{pct.max():.1f}%",
+            "max_price":         f"{float(np.max(pct)):.1f}%",
             "max_price_sector":  SECTOR_SHORT.get(SECTORS[max_p_i], ""),
             "io_shortage":       f"{float(shortage.sum()):.3f}",
             "avg_recovery":      f"{avg_rec.mean():.1f} wks" if len(avg_rec) else "—",
@@ -801,6 +801,162 @@ def api_integrated_coupled():
         "recovery_time": _clean_records(rt),
         "scenario":      sc_key,
     })
+
+@app.route("/api/integrated/coupled_gs", methods=["POST"])
+def api_integrated_coupled_gs():
+    """
+    Gauss-Seidel coupled IO x CGE x ABM simulation with endogenous A matrix.
+    Implements the document core architecture with per-period GS iterations.
+    """
+    from shocks import ALL_SCENARIOS
+
+    data      = request.json or {}
+    sc_key    = data.get("scenario", "S1")
+    T         = int(data.get("weeks", 52))
+    lambda_A  = float(data.get("lambda_A", 0.08))
+    max_inner = int(data.get("max_inner", 8))
+    eps_A     = float(data.get("eps_A", 1e-3))
+    eps_x     = float(data.get("eps_x", 1e-3))
+
+    if sc_key not in ALL_SCENARIOS:
+        return _safe_jsonify({"error": f"Unknown scenario: {sc_key}"}), 400
+
+    model    = get_model()
+    scenario = ALL_SCENARIOS[sc_key]
+
+    result = model.run_coupled_gs(
+        scenario=scenario, T=T,
+        lambda_A=lambda_A, max_inner=max_inner,
+        eps_A=eps_A, eps_x=eps_x,
+    )
+
+    weeks  = list(range(T))
+    onset  = scenario.onset_week
+    io_r   = result["io_result"]
+    abm_r  = result["abm_result"]
+    out    = io_r["output"]
+    sf     = result["coupled_supply_fracs"]
+    gs_iters = result["gs_iterations"]
+    price_ts = result["cge_result"]["price_series"]   # list of (n,) arrays
+    prices   = np.array(price_ts)                     # (T, n)
+    orders   = abm_r["orders"]
+    A_ts     = result["A_evolution"]                  # list of (n,n) arrays
+
+    def _vline(fig, row=None, col=None):
+        kw = dict(line_dash="dash", line_color="#e63946",
+                  annotation_text="Shock", annotation_font_color="#e63946")
+        if row is not None:
+            fig.add_vline(x=onset, row=row, col=col, **kw)
+        else:
+            fig.add_vline(x=onset, **kw)
+
+    COLORS = ["#e63946", "#2a9d8f", "#457b9d", "#f4a261",
+              "#264653", "#7b1fa2", "#e9c46a", "#adb5bd"]
+
+    # IO output chart
+    fig_io = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_io.add_trace(go.Scatter(x=weeks, y=out[:, i].tolist(),
+                                    name=SECTOR_SHORT.get(s, s), mode="lines",
+                                    line=dict(color=COLORS[i], width=1.8)))
+    _vline(fig_io)
+    fig_io.update_layout(**_layout(yaxis_title="Output (norm.)", hovermode="x unified",
+                                   legend=dict(orientation="h", y=-0.2), height=380,
+                                   title="GS-Coupled IO — Gross Output (endogenous A)"))
+
+    # CGE price path
+    fig_prices = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_prices.add_trace(go.Scatter(x=weeks, y=prices[:, i].tolist(),
+                                         name=SECTOR_SHORT.get(s, s), mode="lines",
+                                         line=dict(color=COLORS[i], width=1.8)))
+    _vline(fig_prices)
+    fig_prices.update_layout(**_layout(yaxis_title="Price index (1=baseline)",
+                                        hovermode="x unified",
+                                        legend=dict(orientation="h", y=-0.2), height=360,
+                                        title="GS-Coupled CGE — Price Path"))
+
+    # ABM orders chart
+    fig_abm = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_abm.add_trace(go.Scatter(x=weeks, y=orders[:, i].tolist(),
+                                      name=SECTOR_SHORT.get(s, s), mode="lines",
+                                      line=dict(color=COLORS[i], width=1.8)))
+    _vline(fig_abm)
+    fig_abm.update_layout(**_layout(yaxis_title="Orders (norm.)", hovermode="x unified",
+                                     legend=dict(orientation="h", y=-0.2), height=360,
+                                     title="GS-Coupled ABM — Agent Orders"))
+
+    # Supply fractions chart
+    fig_sf = go.Figure()
+    for i, s in enumerate(SECTORS):
+        fig_sf.add_trace(go.Scatter(x=weeks, y=sf[:, i].tolist(),
+                                     name=SECTOR_SHORT.get(s, s), mode="lines",
+                                     line=dict(color=COLORS[i], width=1.8)))
+    _vline(fig_sf)
+    fig_sf.update_layout(**_layout(yaxis_title="Supply fraction", height=340,
+                                    hovermode="x unified",
+                                    legend=dict(orientation="h", y=-0.2),
+                                    title="IO Supply Fractions (capacity-based)"))
+
+    # GS iterations per period chart
+    fig_gs = go.Figure(go.Bar(
+        x=weeks, y=gs_iters,
+        marker_color=["#e63946" if v >= max_inner else "#2a9d8f" for v in gs_iters],
+    ))
+    fig_gs.add_hline(y=max_inner, line_dash="dash", line_color="#e63946",
+                     annotation_text=f"Max={max_inner}", annotation_font_color="#e63946")
+    _vline(fig_gs)
+    fig_gs.update_layout(**_layout(yaxis_title="GS iterations", height=280,
+                                    title="Gauss-Seidel Iterations per Period"))
+
+    # A-matrix diagonal evolution (selected coefficients)
+    A_BASE = np.array([arr for arr in A_ts])  # (T, n, n)
+    fig_A = go.Figure()
+    key_pairs = [(2, 3, "PTA->PET"), (1, 2, "Chem->PTA"), (3, 4, "PET->Fabric")]
+    pair_colors = ["#e63946", "#2a9d8f", "#457b9d"]
+    for (i, j, lbl), col in zip(key_pairs, pair_colors):
+        vals = [A_BASE[t, j, i] for t in range(T)]
+        fig_A.add_trace(go.Scatter(x=weeks, y=vals, name=lbl, mode="lines",
+                                    line=dict(color=col, width=1.8)))
+    _vline(fig_A)
+    fig_A.update_layout(**_layout(yaxis_title="a_ij coefficient", hovermode="x unified",
+                                   legend=dict(orientation="h", y=-0.2), height=340,
+                                   title="Endogenous A-Matrix Key Coefficients"))
+
+    # KPIs — use avg-price pct from cge_result (welfare bug fix: avg not final-period)
+    pct      = result["cge_result"]["price_index_change_pct"]
+    max_p_i  = int(np.argmax(pct))
+    shortage = io_r["shortage"]
+    bw       = result["bullwhip"]
+    sl       = result["service_level"]
+    rt       = result["recovery_time"]
+    avg_rec  = rt["Recovery_Week"].dropna()
+    gs_arr   = np.array(gs_iters)
+
+    return _safe_jsonify({
+        "io_chart":      _fig_json(fig_io),
+        "price_chart":   _fig_json(fig_prices),
+        "abm_chart":     _fig_json(fig_abm),
+        "sf_chart":      _fig_json(fig_sf),
+        "gs_chart":      _fig_json(fig_gs),
+        "A_chart":       _fig_json(fig_A),
+        "kpis": {
+            "welfare":          f"£{result['welfare_gbp'] / 1e9:.3f}bn",
+            "max_price":        f"{float(np.max(pct)):.1f}%",
+            "max_price_sector": SECTOR_SHORT.get(SECTORS[max_p_i], ""),
+            "io_shortage":      f"{float(shortage.sum()):.3f}",
+            "avg_recovery":     f"{avg_rec.mean():.1f} wks" if len(avg_rec) else "—",
+            "gs_mean_iters":    f"{gs_arr.mean():.2f}",
+            "gs_max_iters":     int(gs_arr.max()),
+            "A_drift_final":    f"{result['A_drift_final']:.6f}",
+        },
+        "bullwhip":      _clean_records(bw),
+        "service_level": _clean_records(sl),
+        "recovery_time": _clean_records(rt),
+        "scenario":      sc_key,
+    })
+
 
 @app.route("/api/scenarios/all", methods=["POST"])
 def api_scenarios_all():

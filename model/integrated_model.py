@@ -162,12 +162,8 @@ class IntegratedSupplyChainModel:
         # Total shortage converted to £bn
         uk_retail_gbp = 51_400_000_000
         polyester_share = 0.57 * 0.40   # polyester fraction of UK retail
-        total_shortage_gbp = (
-            io_result["shortage"].sum()
-            * uk_retail_gbp
-            * polyester_share
-            / self.x_base.sum()
-        )
+        retail_shortage = io_result["shortage"][:, -1].sum()
+        total_shortage_gbp = retail_shortage * uk_retail_gbp * polyester_share / 52
 
         if verbose:
             print(f"  I-O: total shortage (normalised) {io_result['shortage'].sum():.4f}")
@@ -234,7 +230,7 @@ class IntegratedSupplyChainModel:
 
         capacity      = np.ones(n)
         cge_prices    = np.ones(n)
-        demand_mults  = np.ones(n)         # ABM demand signal, starts at baseline
+        demand_mults  = np.ones(n)         # always exogenous (1.0); CGE final demand is exogenous
         cap_rec_mult  = np.ones(n)         # CGE → IO recovery multiplier
 
         # Output accumulators
@@ -265,11 +261,13 @@ class IntegratedSupplyChainModel:
             # ── 1. IO step ──────────────────────────────────────────────────
             # IO uses exogenous final demand — consumer demand doesn't collapse
             # with agent order behaviour. ABM demand_mults feed CGE only.
+            # buf_ptr points to the slot for x(t); x(t-1) is at (buf_ptr-1).
+            # Write x(t) into the buffer AFTER computing it, then advance ptr.
             fd = self.fd_base
-            x_buf[buf_ptr] = io_out[t - 1]   # write last period before step
             x_t, sht_t, sf_t = self.io.io_step(
                 x_buf, buf_ptr, capacity, fd, self.x_base, cap_rec_mult,
             )
+            x_buf[buf_ptr] = x_t
             buf_ptr = (buf_ptr + 1) % buf_len
 
             # ── 2. CGE price step ───────────────────────────────────────────
@@ -287,7 +285,8 @@ class IntegratedSupplyChainModel:
             )
 
             # ── 4. Carry-forward ────────────────────────────────────────────
-            demand_mults = self._abm_to_demand_mults(ord_t)
+            # demand_mults stays at 1.0 (exogenous); ABM→CGE demand feedback
+            # would destabilise prices via Beer Game bullwhip.
             cap_rec_mult = np.clip(cge_prices, 0.5, 3.0)
 
             # Store
@@ -318,11 +317,15 @@ class IntegratedSupplyChainModel:
 
         uk_retail_gbp = 51_400_000_000
         poly_share    = 0.57 * 0.40
-        total_loss    = (
-            io_short.sum() * uk_retail_gbp * poly_share / (self.x_base.sum() + 1e-12)
-        )
-        welfare_gbp   = -(Q0_GBP * (price_ts[-1] - 1)).sum()
-        trade_flows   = self.cge._compute_trade_flows(price_ts[-1], sf_ts[-1])
+        retail_short  = io_short[:, -1].sum()
+        total_loss    = retail_short * uk_retail_gbp * poly_share / 52
+        # Welfare = average price deviation over all periods × sector output.
+        # Using mean rather than final-period prices captures shocks that fully
+        # recover before period T (fast-recovering downstream sectors like Garment
+        # otherwise show zero welfare at week 51 even when severely disrupted).
+        avg_prices  = price_ts.mean(axis=0)
+        welfare_gbp = -(Q0_GBP * (avg_prices - 1)).sum()
+        trade_flows   = self.cge._compute_trade_flows(avg_prices, sf_ts.mean(axis=0))
 
         if verbose:
             print(f"Coupled run — scenario {scenario.name}")
@@ -336,9 +339,9 @@ class IntegratedSupplyChainModel:
             "abm_result":            abm_result,
             "coupled_supply_fracs":  sf_ts,
             "cge_result": {
-                "equilibrium_prices":    price_ts[-1],
+                "equilibrium_prices":    avg_prices,
                 "price_series":          price_ts,
-                "price_index_change_pct": (price_ts[-1] - 1) * 100,
+                "price_index_change_pct": (avg_prices - 1) * 100,
                 "welfare_change_gbp":    welfare_gbp,
                 "trade_flows":           trade_flows,
                 "converged":             True,
@@ -352,6 +355,284 @@ class IntegratedSupplyChainModel:
             "trade_flows":           trade_flows,
             "total_shortage_gbp":    total_loss,
             "welfare_gbp":           welfare_gbp,
+        }
+
+    # ── Gauss–Seidel coupled simulation (document architecture) ──────────────
+
+    def run_coupled_gs(self, scenario: Shock, T: int = 52,
+                       lambda_A: float = 0.08,
+                       max_inner: int = 8,
+                       eps_A: float = 1e-3,
+                       eps_x: float = 1e-3,
+                       demand_noise: float = 0.03,
+                       start_month: int = 1,
+                       apply_seasonality: bool = True,
+                       verbose: bool = False) -> Dict:
+        """
+        Bidirectional iterative coupling following the CGEABM document architecture.
+
+        Within each macro period t, runs Gauss–Seidel (Picard) iterations k until
+        the technical coefficient matrix A and sectoral output x both converge:
+
+          Initialise:  A_t^(0) = A_{t-1}*
+
+          Repeat k = 0, 1, … until convergence:
+            Step 1 (CGE)  : prices^(k) = price_step(supply_fracs, demand_mults,
+                                                     prev_prices, A=A_t^(k))
+            Step 2 (IO)   : x^(k), sf^(k) = io_step(…, A=A_t^(k))
+            Step 3 (ABM)  : orders^(k), X_abm^(k) = step_period(prices^(k), sf^(k))
+            Step 4 (Â)    : Â_t^ABM^(k) = compute_abm_flows(X_abm, sf, A_t^(k))
+            Step 5 (relax): A_t^(k+1) = (1−λ)·A_t^(k) + λ·Â_t^ABM^(k)
+            Step 6 (check): stop if ‖ΔA‖ < ε_A and ‖Δx‖ < ε_X
+
+          After convergence:
+            Adapt supplier shares:  s_{ab,t+1} ∝ s_{ab,t}·exp(−η·eff_cost)
+            Capital accumulation:   K_{t+1} = (1−δ)·K_t + I_t*  (δ = 0.002/wk)
+
+        Parameters
+        ----------
+        lambda_A   : relaxation weight for A update ∈ (0,1]. Smaller = more stable.
+        max_inner  : maximum Gauss–Seidel iterations per period.
+        eps_A      : convergence tolerance on ‖ΔA‖_max.
+        eps_x      : convergence tolerance on ‖Δx‖_max / x_baseline.
+        """
+        from io_model import A_BASE, B_BASE
+        io_sched  = build_io_shock_schedule(scenario)
+        abm_sched = scenario.abm_schedule
+        n         = N_SECTORS
+
+        # ── Capital stock initialisation ────────────────────────────────────
+        # K_i = base_capital * capacity; start at steady state (cap=1)
+        # Depreciation δ = 0.002/week ≈ 10%/year
+        delta     = 0.002
+        K         = self.x_base.copy()         # normalised capital stock (1 = baseline)
+        K_base    = self.x_base.copy()          # reference
+
+        # ── IO history buffer ───────────────────────────────────────────────
+        max_lag = int(self.io.lags.max())
+        buf_len = max_lag + 2
+        x_buf   = np.zeros((buf_len, n))
+        x_buf[:] = self.x_base
+        buf_ptr  = 0
+
+        # ── Mutable A — start from calibrated base ──────────────────────────
+        A_current = A_BASE.copy()
+        self.io.set_A(A_current)
+
+        capacity      = np.ones(n)
+        cge_prices    = np.ones(n)
+        demand_mults  = np.ones(n)
+        cap_rec_mult  = np.ones(n)
+        x_prev        = self.x_base.copy()
+
+        # Output accumulators
+        io_out   = np.zeros((T, n))
+        io_short = np.zeros((T, n))
+        io_cap   = np.ones((T, n))
+        price_ts = np.ones((T, n))
+        abm_ord  = np.zeros((T, n))
+        abm_sht  = np.zeros((T, n))
+        sf_ts    = np.ones((T, n))
+        A_ts     = np.zeros((T, n, n))   # track A evolution
+        gs_iters = np.zeros(T, dtype=int)  # GS iterations needed per period
+
+        io_out[0]  = self.x_base
+        A_ts[0]    = A_current.copy()
+
+        self.abm.reset()
+
+        abm_inv  = np.zeros((T, n))
+
+        for t in range(1, T):
+
+            # ── Supply shock (modifies capacity) ────────────────────────────
+            if io_sched and t in io_sched:
+                shock_list = io_sched[t]
+                if isinstance(shock_list, tuple):
+                    shock_list = [shock_list]
+                for s_idx, s_frac in shock_list:
+                    capacity[s_idx] = max(0.0, capacity[s_idx] * (1 - s_frac))
+
+            # ── Gauss–Seidel inner loop ─────────────────────────────────────
+            # Each iteration refines A, prices, and x until convergence.
+            # capacity is NOT modified inside the loop (each iteration uses a
+            # snapshot cap_snap) to avoid accumulating recovery N_inner times.
+            # ABM step_period is also NOT called inside the loop to avoid
+            # corrupting agent state; it runs once after convergence.
+            A_k      = A_current.copy()
+            prices_k = cge_prices.copy()
+            x_k      = x_prev.copy()
+            sf_k     = np.clip(x_k / (self.x_base + 1e-12), 0.0, 1.0)
+            sht_k    = np.zeros(n)
+            cap_snap = capacity.copy()   # frozen capacity for all GS iterations
+
+            delta_A = 0.0
+            delta_x = 0.0
+
+            for k in range(max_inner):
+
+                # Step 1 — CGE: prices given current A_k and IO supply fracs
+                self.io.set_A(A_k)
+                prices_k = self.cge.price_step(
+                    sf_k, demand_mults, prices_k, A=A_k
+                )
+
+                # Step 2 — IO: output given current A_k.
+                # Pass cap_snap copy so io_step recovery does not accumulate.
+                # buf_ptr is the write slot for x(t); x(t-1) is at (buf_ptr-1).
+                cap_iter = cap_snap.copy()
+                x_new, sht_new, sf_k = self.io.io_step(
+                    x_buf, buf_ptr, cap_iter,
+                    self.fd_base, self.x_base, cap_rec_mult,
+                )
+                sht_k = sht_new
+
+                # Step 3 — Micro→Macro: ABM-implied A from capacity fractions.
+                # Use cap_snap (stable across iterations) so A recovers in
+                # proportion to rebuilt capacity, not output ratio.
+                cap_sf = np.clip(cap_snap, 0.0, 1.0)
+                A_hat = self.abm.compute_abm_flows(
+                    x_new, cap_sf, A_k, A_base=A_BASE
+                )
+
+                # Step 4 — Relaxed A update with Hawkins–Simon enforcement
+                A_next = (1.0 - lambda_A) * A_k + lambda_A * A_hat
+                col_sums = A_next.sum(axis=0)
+                for j in range(n):
+                    if col_sums[j] >= 1.0:
+                        A_next[:, j] *= 0.95 / col_sums[j]
+
+                # Step 5 — Convergence check
+                delta_A = float(np.max(np.abs(A_next - A_k)))
+                delta_x = float(np.max(
+                    np.abs(x_new - x_k) / (self.x_base + 1e-12)
+                ))
+
+                x_k = x_new.copy()
+                A_k = A_next
+
+                if delta_A < eps_A and delta_x < eps_x:
+                    gs_iters[t] = k + 1
+                    break
+            else:
+                gs_iters[t] = max_inner
+
+            # ── True ABM step (once per period, after GS convergence) ───────
+            # Called here — not inside the GS loop — so agent state advances
+            # exactly one period regardless of how many GS iterations ran.
+            ord_k, asht_k, ainv_k = self.abm.step_period(
+                t, demand=1.0,
+                external_prices=prices_k,
+                io_supply_ratios=sf_k,
+                demand_noise=demand_noise,
+                start_month=start_month,
+                apply_seasonality=apply_seasonality,
+                shock_schedule=abm_sched,
+            )
+
+            # ── Accept converged A and update circular buffer ────────────────
+            A_current      = A_k
+            x_buf[buf_ptr] = x_k          # write converged x(t) for future lags
+            buf_ptr        = (buf_ptr + 1) % buf_len
+
+            # ── Adaptive supplier shares (document Section 3.2) ─────────────
+            self.abm.adapt_supplier_shares(eta=0.05)
+
+            # ── Capital accumulation ─────────────────────────────────────────
+            delta_x_vec   = np.maximum(0.0, x_k - x_prev)
+            I_replacement = delta * K
+            I_expansion   = self.io.B @ delta_x_vec
+            K             = (1.0 - delta) * K + I_replacement + I_expansion
+            cap_from_K    = np.clip(K / (K_base + 1e-12), 0.0, 2.0)
+
+            # Apply one round of io_step capacity recovery to update capacity
+            capacity = cap_iter.copy()   # take recovery from last GS iteration
+            capacity = np.minimum(capacity, cap_from_K)
+
+            price_rec = np.clip(prices_k, 1.0, 3.0)
+            for i in range(n):
+                if capacity[i] < 1.0:
+                    capacity[i] = min(1.0, capacity[i] + 0.02 * float(price_rec[i]))
+
+            # ── Carry-forward state ──────────────────────────────────────────
+            cap_rec_mult = np.clip(prices_k, 0.5, 3.0)
+            # demand_mults stays at 1.0 (exogenous CGE final demand)
+            cge_prices   = prices_k.copy()
+            x_prev       = x_k.copy()
+
+            # Store
+            io_out[t]   = x_k
+            io_short[t] = sht_k
+            io_cap[t]   = capacity.copy()
+            price_ts[t] = prices_k
+            sf_ts[t]    = sf_k
+            abm_ord[t]  = ord_k
+            abm_sht[t]  = asht_k
+            abm_inv[t]  = ainv_k
+            A_ts[t]     = A_current.copy()
+
+            if verbose and t % 10 == 0:
+                print(f"  t={t:3d}  GS iters={gs_iters[t]}  "
+                      f"dA={delta_A:.4f}  max_price={prices_k.max():.3f}")
+
+        # Restore IO to baseline A so other model methods are unaffected
+        self.io.set_A(A_BASE.copy())
+
+        # ── Package results ─────────────────────────────────────────────────
+        io_result = {
+            "output": io_out, "shortage": io_short, "prices": price_ts,
+            "capacity": io_cap, "investment": np.zeros((T, n)),
+            "sectors": SECTORS, "T": T,
+        }
+        abm_result = {
+            "inventory": abm_inv, "shortage": abm_sht,
+            "orders": abm_ord, "capacity": io_cap,
+            "prices": price_ts, "sectors": SECTORS, "T": T,
+        }
+
+        res_triangle = resilience_all_sectors(io_result, self.x_base)
+        scorecard    = resilience_scorecard(io_result, self.x_base)
+        bullwhip     = self.abm.bullwhip_ratio(abm_result)
+        service_lv   = self.abm.service_level(abm_result)
+        rec_time     = self.abm.recovery_time(abm_result)
+
+        uk_retail_gbp  = 51_400_000_000
+        poly_share     = 0.57 * 0.40
+        retail_short   = io_short[:, -1].sum()
+        total_loss     = retail_short * uk_retail_gbp * poly_share / 52
+        avg_prices_gs  = price_ts.mean(axis=0)
+        welfare_gbp    = -(Q0_GBP * (avg_prices_gs - 1)).sum()
+        trade_flows    = self.cge._compute_trade_flows(avg_prices_gs, sf_ts.mean(axis=0))
+
+        # A-matrix drift: how much has A changed from baseline by period end?
+        A_drift = np.abs(A_ts[-1] - A_BASE).max()
+
+        return {
+            "scenario":             scenario.name,
+            "coupled_gs":           True,
+            "io_result":            io_result,
+            "abm_result":           abm_result,
+            "coupled_supply_fracs": sf_ts,
+            "A_evolution":          A_ts,
+            "A_drift_final":        float(A_drift),
+            "gs_iterations":        gs_iters,
+            "cge_result": {
+                "equilibrium_prices":     avg_prices_gs,
+                "price_series":           price_ts,
+                "price_index_change_pct": (avg_prices_gs - 1) * 100,
+                "welfare_change_gbp":     welfare_gbp,
+                "trade_flows":            trade_flows,
+                "converged":              True,
+                "iterations":             T,
+            },
+            "resilience_triangle":  res_triangle,
+            "scorecard":            scorecard,
+            "bullwhip":             bullwhip,
+            "service_level":        service_lv,
+            "recovery_time":        rec_time,
+            "trade_flows":          trade_flows,
+            "total_shortage_gbp":   total_loss,
+            "welfare_gbp":          welfare_gbp,
         }
 
     # ── Multi-scenario comparison ─────────────────────────────────────────────

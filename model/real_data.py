@@ -28,9 +28,16 @@ N_SECTORS = len(SECTORS)
 # ── UK 2023 Synthetic Apparel Imports — HMRC data ────────────────────────────
 UK_IMPORTS_TOTAL_GBP = 2_388_954_178
 
+# IMPORTANT: The HMRC raw download has both an "EU" aggregate row AND individual
+# EU-member rows (Italy, Netherlands, Spain, France, Belgium, Germany, Romania).
+# Including both double-counts £471.6m. This dict lists INDIVIDUAL countries only;
+# the EU aggregate is stored separately as UK_IMPORTS_EU_TOTAL_GBP.
+# Residual EU (countries not individually named): £586.5m - £471.6m = £115.0m
+# captured via "EU_Other" below so shares still sum to 1.0.
+UK_IMPORTS_EU_TOTAL_GBP = 586_526_782   # total EU block (HMRC HS61+62 2023)
+
 UK_IMPORTS_BY_COUNTRY = {
     "China":        {"value_gbp": 651_373_563,  "share": 0.27266},
-    "EU":           {"value_gbp": 586_526_782,  "share": 0.24552},
     "Bangladesh":   {"value_gbp": 287_422_073,  "share": 0.12031},
     "Turkey":       {"value_gbp": 143_694_104,  "share": 0.06015},
     "Vietnam":      {"value_gbp": 117_735_860,  "share": 0.04928},
@@ -52,6 +59,9 @@ UK_IMPORTS_BY_COUNTRY = {
     "Jordan":       {"value_gbp": 13_010_271,   "share": 0.00545},
     "Philippines":  {"value_gbp": 12_962_664,   "share": 0.00543},
     "Thailand":     {"value_gbp":  8_655_357,   "share": 0.00362},
+    # Residual: all other countries not individually reported by HMRC
+    # = Total (GBP2,388,954,178) minus all individually named entries above
+    "EU_Other":     {"value_gbp": 215_949_005,  "share": 0.09039},
 }
 
 # ── UK domestic industry (ONS via research) ───────────────────────────────────

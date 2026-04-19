@@ -103,8 +103,15 @@ SCENARIO_MEG_DISRUPTION = Shock(
         _S["PET_Resin_Yarn"]:      0.80,
     },
     abm_schedule = {
-        4: [{"sector": _S["Chemical_Processing"], "country": "Saudi_Arabia",
-             "severity": 0.60, "duration": 8}],
+        4: [
+            # Saudi Arabia loses 60% of MEG export capacity (origin of disruption)
+            {"sector": _S["Chemical_Processing"], "country": "Saudi_Arabia",
+             "severity": 0.60, "duration": 8},
+            # China loses 43% × 60% = 25.8% ≈ 0.26 of MEG inputs (import dependency)
+            # China Chemical (35% of global) × (1-0.26) → sector drop ≈ 25% matching IO
+            {"sector": _S["Chemical_Processing"], "country": "China",
+             "severity": 0.26, "duration": 8},
+        ],
         # Buffer exhaustion: PET disruption begins after 3-week delay
         7: [{"sector": _S["PET_Resin_Yarn"], "country": "China",
              "severity": 0.25, "duration": 10}],
@@ -139,8 +146,16 @@ SCENARIO_GEOPOLITICAL = Shock(
     },
     abm_schedule = {
         1: [
+            # China garment: near-total block of Chinese apparel exports under tariff
+            # severity 0.90 × China share 0.273 = 24.6% sector loss
             {"sector": _S["Garment_Assembly"], "country": "China",
-             "severity": 0.60, "duration": 52},
+             "severity": 0.90, "duration": 52},
+            # Bangladesh: 40% disruption — Chinese fabric no longer available for
+            # Bangladesh assembly (upstream tracing; effective dependency ~30-50%)
+            # 0.120 × 0.40 = 4.8% additional sector loss → total ≈ 29% (approaching IO 35%)
+            {"sector": _S["Garment_Assembly"], "country": "Bangladesh",
+             "severity": 0.40, "duration": 52},
+            # Fabric Weaving: China fabric blocked (0.433 × 0.40 ≈ 17% ≈ IO 20%)
             {"sector": _S["Fabric_Weaving"],   "country": "China",
              "severity": 0.40, "duration": 52},
         ],

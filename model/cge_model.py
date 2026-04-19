@@ -291,11 +291,7 @@ class CGEModel:
                     continue
                 fshare = FREIGHT_COST_SHARE.get(SECTORS[j], 0.03)
                 freight_push = fshare * (P_logistics - 1.0)
-                P_propagated[j] = max(P_propagated[j], 1.0 + freight_push
-                                      + (P_propagated[j] - 1.0))
-                # Additive: total = original cost_push + freight_push
-                P_propagated[j] = (P_propagated[j] - 1.0) + freight_push + 1.0
-                P_propagated[j] = min(P_propagated[j], 8.0)  # bounds
+                P_propagated[j] = min(P_propagated[j] + freight_push, 8.0)
 
         # ── Step 3: tatonnement with demand shocks ─────────────────────────────
         P = P_propagated.copy()
@@ -355,6 +351,7 @@ class CGEModel:
                    prev_prices: np.ndarray,
                    max_iter: int = 40,
                    lambda_: float = 0.08,
+                   A: np.ndarray = None,
                    ) -> np.ndarray:
         """
         Lightweight per-period price update for the coupled IO × CGE × ABM loop.
@@ -377,6 +374,7 @@ class CGEModel:
         (n,) updated equilibrium price vector for this period.
         """
         from io_model import A_BASE
+        A_use = A if A is not None else A_BASE
 
         P = prev_prices.copy()
 
@@ -391,9 +389,9 @@ class CGEModel:
 
             P_new = P * (1.0 + lambda_ * ED / (self.Q0 + 1e-12))
 
-            # IO upstream cost propagation
+            # Upstream cost propagation using current A (dynamic in GS loop)
             for j in range(1, self.n):
-                cost_push = sum(A_BASE[i, j] * (P_new[i] - 1.0) for i in range(j))
+                cost_push = sum(A_use[i, j] * (P_new[i] - 1.0) for i in range(j))
                 P_new[j]  = max(P_new[j], 1.0 + cost_push)
 
             P_new = np.clip(P_new, 0.3, 4.0)
