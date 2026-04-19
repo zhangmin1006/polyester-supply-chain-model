@@ -17,9 +17,11 @@
   {% endfor %}
 </div>
 
-<!-- Controls -->
+<!-- Unified Simulation Controls -->
 <div class="card">
   <div class="card-title">Simulation Controls</div>
+
+  <!-- Row 1: common settings -->
   <div class="form-row">
     <div class="form-group">
       <label>Scenario</label>
@@ -47,103 +49,45 @@
         <input type="checkbox" id="sim-seasonal" checked> HMRC Seasonality
       </label>
     </div>
-    <div class="form-group" style="justify-content:flex-end;gap:8px;flex-direction:row">
-      <button id="btn-run-scenario" class="btn-primary-custom">
-        <i class="fa fa-play"></i> Run Simulation
-      </button>
-      <button id="btn-run-all" class="btn-secondary-custom">
-        <i class="fa fa-play"></i> Run All Scenarios
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- Single scenario results -->
-<div id="result-section" style="display:none">
-  <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
-    <div class="kpi-card danger">
-      <div class="kpi-value" id="kpi-welfare">—</div>
-      <div class="kpi-label">Welfare Change</div>
-    </div>
-    <div class="kpi-card warn">
-      <div class="kpi-value" id="kpi-price">—</div>
-      <div class="kpi-label">Max Price Rise</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-value" id="kpi-shortage">—</div>
-      <div class="kpi-label">IO Total Shortage</div>
-    </div>
-    <div class="kpi-card ok">
-      <div class="kpi-value" id="kpi-recovery">—</div>
-      <div class="kpi-label">Mean Recovery</div>
-    </div>
   </div>
 
-  <div id="result-tabs" data-tabs>
-    <div class="tab-bar">
-      <button class="tab-btn active" data-tab="tab-io">📊 I-O Output</button>
-      <button class="tab-btn" data-tab="tab-cge">💰 CGE Prices</button>
-      <button class="tab-btn" data-tab="tab-abm">🤖 ABM Dynamics</button>
-      <button class="tab-btn" data-tab="tab-metrics">📋 Metrics Tables</button>
-    </div>
-    <div id="tab-io" class="tab-pane active">
-      <div class="chart-box"><div id="chart-io" style="height:380px"></div></div>
-    </div>
-    <div id="tab-cge" class="tab-pane">
-      <div class="chart-box"><div id="chart-cge" style="height:360px"></div></div>
-    </div>
-    <div id="tab-abm" class="tab-pane">
-      <div class="chart-box"><div id="chart-abm" style="height:500px"></div></div>
-    </div>
-    <div id="tab-metrics" class="tab-pane">
-      <div class="three-col">
-        <div class="card"><div class="card-title">Bullwhip Ratio</div><div id="table-bullwhip"></div></div>
-        <div class="card"><div class="card-title">Service Level</div><div id="table-service"></div></div>
-        <div class="card"><div class="card-title">Recovery Time</div><div id="table-recovery"></div></div>
+  <!-- Row 2: GS-specific settings + run buttons -->
+  <div class="form-row" style="margin-top:8px;padding-top:10px;border-top:1px solid var(--border)">
+    <div class="form-group">
+      <label style="color:var(--text-muted);font-size:.78rem">Gauss–Seidel settings</label>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:.82rem">&lambda;<sub>A</sub>: <span id="gs-lambda-display">0.08</span>
+          <input type="range" id="gs-lambda" class="form-control" min="0.02" max="0.30" step="0.02" value="0.08" style="min-width:110px;display:inline-block;vertical-align:middle">
+        </label>
+        <label style="font-size:.82rem">Max GS iters:
+          <select id="gs-max-inner" class="form-control" style="width:70px;display:inline-block">
+            <option value="4">4</option>
+            <option value="8" selected>8</option>
+            <option value="12">12</option>
+          </select>
+        </label>
       </div>
     </div>
-  </div>
-</div>
-
-<!-- All scenarios results -->
-<div id="all-results-section" style="display:none">
-  <div class="card" style="margin-top:20px">
-    <div class="card-title">Running all scenarios…</div>
-    <div class="progress-bar-custom"><div id="all-progress-fill" class="progress-fill" style="width:0%"></div></div>
-  </div>
-  <div class="card">
-    <div class="card-title">Cross-Scenario Comparison</div>
-    <div id="table-comparison"></div>
-  </div>
-  <div class="three-col">
-    <div class="chart-box"><div id="chart-all-loss"  style="height:300px"></div></div>
-    <div class="chart-box"><div id="chart-all-price" style="height:300px"></div></div>
-    <div class="chart-box"><div id="chart-all-rec"   style="height:300px"></div></div>
-  </div>
-</div>
-
-<!-- ── Bidirectional Coupled IO × CGE × ABM ──────────────────────────────── -->
-<div class="card" style="margin-top:28px;border-left:4px solid #2a9d8f">
-  <div class="card-title">Bidirectional Coupled Simulation
-    <span style="font-size:.75rem;font-weight:400;color:var(--text-muted);margin-left:8px">
-      IO &harr; CGE &harr; ABM per-period &middot; welfare = avg price deviation over simulation
-    </span>
-  </div>
-  <div class="form-row">
-    <div class="form-group" style="flex:1;color:var(--text-muted);font-size:.8rem">
-      Uses same scenario / weeks / seasonality settings above.
-      Welfare captures shocks that fully recover before week T (unlike single-period CGE).
-    </div>
-    <div class="form-group" style="justify-content:flex-end;flex-direction:row">
+    <div class="form-group" style="justify-content:flex-end;gap:10px;flex-direction:row;align-items:flex-end;margin-left:auto">
       <button id="btn-run-coupled" class="btn-primary-custom" style="background:#2a9d8f;border-color:#2a9d8f">
-        <i class="fa fa-play"></i> Run Coupled
+        <i class="fa fa-play"></i> Run Bidirectional Coupled
+      </button>
+      <button id="btn-run-gs" class="btn-primary-custom" style="background:#7b1fa2;border-color:#7b1fa2">
+        <i class="fa fa-play"></i> Run Gauss–Seidel
       </button>
     </div>
   </div>
 </div>
 
+<!-- ── Bidirectional Coupled results ──────────────────────────────────────── -->
 <div id="coupled-result-section" style="display:none">
-  <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-top:14px">
+  <div style="margin:20px 0 10px;font-weight:700;font-size:1rem;color:#2a9d8f">
+    Bidirectional Coupled IO &harr; CGE &harr; ABM
+    <span style="font-size:.75rem;font-weight:400;color:var(--text-muted);margin-left:8px">
+      per-period &middot; welfare = avg price deviation over simulation
+    </span>
+  </div>
+  <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
     <div class="kpi-card danger">
       <div class="kpi-value" id="cp-kpi-welfare">—</div>
       <div class="kpi-label">Avg Welfare Loss (sim. period)</div>
@@ -192,36 +136,15 @@
   </div>
 </div>
 
-<!-- ── Gauss–Seidel Coupled Simulation ───────────────────────────────────── -->
-<div class="card" style="margin-top:28px;border-left:4px solid #7b1fa2">
-  <div class="card-title">Gauss–Seidel Coupled Simulation
+<!-- ── Gauss–Seidel results ───────────────────────────────────────────────── -->
+<div id="gs-result-section" style="display:none">
+  <div style="margin:20px 0 10px;font-weight:700;font-size:1rem;color:#7b1fa2">
+    Gauss–Seidel Coupled IO &harr; CGE &harr; ABM
     <span style="font-size:.75rem;font-weight:400;color:var(--text-muted);margin-left:8px">
-      Endogenous A-matrix &middot; IO &harr; CGE &harr; ABM per-period iteration
+      endogenous A-matrix &middot; per-period iteration
     </span>
   </div>
-  <div class="form-row">
-    <div class="form-group">
-      <label>&lambda;<sub>A</sub> (A relaxation): <span id="gs-lambda-display">0.08</span></label>
-      <input type="range" id="gs-lambda" class="form-control" min="0.02" max="0.30" step="0.02" value="0.08" style="min-width:120px">
-    </div>
-    <div class="form-group">
-      <label>Max GS iterations</label>
-      <select id="gs-max-inner" class="form-control" style="width:80px">
-        <option value="4">4</option>
-        <option value="8" selected>8</option>
-        <option value="12">12</option>
-      </select>
-    </div>
-    <div class="form-group" style="justify-content:flex-end;gap:8px;flex-direction:row">
-      <button id="btn-run-gs" class="btn-primary-custom" style="background:#7b1fa2;border-color:#7b1fa2">
-        <i class="fa fa-play"></i> Run GS Simulation
-      </button>
-    </div>
-  </div>
-</div>
-
-<div id="gs-result-section" style="display:none">
-  <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-top:14px">
+  <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr)">
     <div class="kpi-card danger">
       <div class="kpi-value" id="gs-kpi-welfare">—</div>
       <div class="kpi-label">Welfare Change</div>

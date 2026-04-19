@@ -303,97 +303,9 @@ async function initGhosh() {
 // PAGE: SCENARIOS
 // ══════════════════════════════════════════════════════════════════════════════
 function initScenarios() {
-  initTabs('#result-tabs');
-  bindRange('sim-weeks','weeks-display');
+  bindRange('sim-weeks', 'weeks-display');
   initCoupledButton();
   initGSButton();
-
-  const form   = document.getElementById('scenario-form');
-  const runBtn = document.getElementById('btn-run-scenario');
-  const allBtn = document.getElementById('btn-run-all');
-
-  if (runBtn) {
-    runBtn.addEventListener('click', async () => {
-      const sc       = document.getElementById('sel-scenario').value;
-      const weeks    = document.getElementById('sim-weeks').value;
-      const stMonth  = document.getElementById('sim-start-month').value;
-      const seasonal = document.getElementById('sim-seasonal').checked;
-
-      runBtn.disabled = true;
-      runBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Simulating…';
-
-      // Show result tabs section
-      document.getElementById('result-section').style.display = '';
-
-      try {
-        const res  = await fetch('/api/scenario/run', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ scenario:sc, weeks, start_month:stMonth, seasonality:seasonal }),
-        });
-        const data = await res.json();
-
-        // KPIs
-        const k = data.kpis;
-        document.getElementById('kpi-welfare').textContent  = k.welfare;
-        document.getElementById('kpi-price').textContent    = k.max_price + ' at ' + k.max_price_sector;
-        document.getElementById('kpi-shortage').textContent = k.io_shortage;
-        document.getElementById('kpi-recovery').textContent = k.avg_recovery;
-
-        // Charts
-        renderPlotly('chart-io',  data.io_chart);
-        renderPlotly('chart-cge', data.cge_chart);
-        renderPlotly('chart-abm', data.abm_chart);
-
-        // Tables
-        renderTable('table-bullwhip', data.bullwhip,
-          ['Sector','Order_Variance','Bullwhip_Ratio']);
-        renderTable('table-service', data.service_level,
-          ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
-        renderTable('table-recovery', data.recovery_time,
-          ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
-
-        toast(`${sc} simulation complete`, 'success');
-      } catch(e) { toast('Simulation error: ' + e.message, 'error'); }
-
-      runBtn.disabled = false;
-      runBtn.innerHTML = '<i class="fa fa-play"></i> Run Simulation';
-    });
-  }
-
-  if (allBtn) {
-    allBtn.addEventListener('click', async () => {
-      allBtn.disabled = true;
-      allBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running all…';
-      document.getElementById('all-results-section').style.display = '';
-
-      const prog = document.getElementById('all-progress-fill');
-      if (prog) { prog.style.width = '10%'; }
-
-      try {
-        const weeks = document.getElementById('sim-weeks').value;
-        const res   = await fetch('/api/scenarios/all', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ weeks }),
-        });
-        if (prog) prog.style.width = '90%';
-        const data = await res.json();
-        if (prog) prog.style.width = '100%';
-
-        renderPlotly('chart-all-loss',  data.loss_chart);
-        renderPlotly('chart-all-price', data.price_chart);
-        renderPlotly('chart-all-rec',   data.rec_chart);
-        renderTable('table-comparison', data.comparison,
-          ['Scenario','Max_Price_Rise_%','Max_Price_Sector','Welfare_Change_£bn',
-           'Economic_Loss_£bn','Worst_Sector','Avg_Recovery_Weeks','Bullwhip_Ratio_Retail']);
-        toast('All scenarios complete', 'success');
-      } catch(e) { toast('Error: ' + e.message, 'error'); }
-
-      allBtn.disabled = false;
-      allBtn.innerHTML = '<i class="fa fa-play"></i> Run All Scenarios';
-    });
-  }
 }
 
 // ── Bidirectional Coupled button ─────────────────────────────────────────────
