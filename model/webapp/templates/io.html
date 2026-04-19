@@ -1,182 +1,288 @@
 {% extends "base.html" %}
-{% block title %}I-O Analysis{% endblock %}
+{% block title %}Dynamic I-O Analysis{% endblock %}
 {% set active = "io" %}
-{% block page_title %}Input-Output Model Analysis{% endblock %}
-{% block page_subtitle %}Leontief multipliers · Backward/forward linkages · Dynamic shock simulation{% endblock %}
+{% block page_title %}Dynamic I-O Analysis{% endblock %}
+{% block page_subtitle %}Leontief multipliers · Dynamic shock simulation · MRIO · Ghosh supply-push{% endblock %}
 {% block content %}
 <body data-page="io">
 
-<div id="io-tabs" data-tabs>
+<div id="io-top-tabs" data-tabs>
   <div class="tab-bar">
-    <button class="tab-btn active" data-tab="tab-io-mult">Multipliers</button>
-    <button class="tab-btn" data-tab="tab-io-link">Linkages</button>
-    <button class="tab-btn" data-tab="tab-io-shock">Shock Impact</button>
-    <button class="tab-btn" data-tab="tab-io-sim">Dynamic Simulation</button>
-    <button class="tab-btn" data-tab="tab-io-calib">Calibration</button>
+    <button class="tab-btn active" data-tab="tab-io-core">📊 I-O Core</button>
+    <button class="tab-btn" data-tab="tab-mrio">🌐 MRIO Analysis</button>
+    <button class="tab-btn" data-tab="tab-ghosh">⬆️ Ghosh Supply-Push</button>
   </div>
 
-  <!-- Multipliers -->
-  <div id="tab-io-mult" class="tab-pane active">
-    <div class="info-box">
-      Output multiplier = total gross output generated per unit of final demand in that sector
-      (Leontief inverse row sum). Red bars exceed the mean — these are high-leverage sectors.
-    </div>
-    <div class="chart-box">
-      <div id="chart-io-mult" style="height:360px">
-        <div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div>
+  <!-- ── I-O Core ──────────────────────────────────────────────────────────── -->
+  <div id="tab-io-core" class="tab-pane active">
+    <div id="io-tabs" data-tabs>
+      <div class="tab-bar" style="border-bottom:none;margin-bottom:0">
+        <button class="tab-btn active" data-tab="tab-io-mult">Multipliers</button>
+        <button class="tab-btn" data-tab="tab-io-link">Linkages</button>
+        <button class="tab-btn" data-tab="tab-io-shock">Shock Impact</button>
+        <button class="tab-btn" data-tab="tab-io-sim">Dynamic Simulation</button>
+        <button class="tab-btn" data-tab="tab-io-calib">Calibration</button>
       </div>
-    </div>
-    <div id="table-io-mult"></div>
-  </div>
 
-  <!-- Linkages -->
-  <div id="tab-io-link" class="tab-pane">
-    <div class="info-box">
-      <strong>Top-right quadrant</strong> (BL &amp; FL &gt; 1): structurally key sectors — shocks propagate both upstream and downstream.
-      <strong>Top-left</strong>: supply-push dominant. <strong>Bottom-right</strong>: demand-pull dominant.
-    </div>
-    <div class="chart-box">
-      <div id="chart-io-link" style="height:480px"></div>
-    </div>
-    <div id="table-io-link"></div>
-  </div>
+      <div id="tab-io-mult" class="tab-pane active">
+        <div class="info-box">
+          Output multiplier = total gross output generated per unit of final demand in that sector
+          (Leontief inverse row sum). Red bars exceed the mean — these are high-leverage sectors.
+        </div>
+        <div class="chart-box">
+          <div id="chart-io-mult" style="height:360px">
+            <div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div>
+          </div>
+        </div>
+        <div id="table-io-mult"></div>
+      </div>
 
-  <!-- Shock Impact -->
-  <div id="tab-io-shock" class="tab-pane">
-    <div class="card">
-      <div class="card-title">Shock Configuration</div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Shocked Sector</label>
-          <select id="io-shock-sector" class="form-control">
-            {% for s in sectors %}{% set i = loop.index0 %}
-            <option value="{{ i }}">{{ sector_short.get(s, s) }}</option>
-            {% endfor %}
-          </select>
+      <div id="tab-io-link" class="tab-pane">
+        <div class="info-box">
+          <strong>Top-right quadrant</strong> (BL &amp; FL &gt; 1): structurally key sectors — shocks propagate both upstream and downstream.
+          <strong>Top-left</strong>: supply-push dominant. <strong>Bottom-right</strong>: demand-pull dominant.
         </div>
-        <div class="form-group" style="min-width:200px">
-          <label>Capacity Loss: <span id="io-shock-sev-display">50</span>%</label>
-          <input type="range" id="io-shock-sev" class="form-control" min="5" max="100" value="50">
-        </div>
-        <div class="form-group" style="justify-content:flex-end">
-          <button id="btn-io-shock" class="btn-primary-custom">
-            <i class="fa fa-bolt"></i> Calculate Impact
-          </button>
-        </div>
+        <div class="chart-box"><div id="chart-io-link" style="height:480px"></div></div>
+        <div id="table-io-link"></div>
       </div>
-    </div>
-    <div id="io-shock-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(2,1fr)">
-      <div class="kpi-card danger">
-        <div class="kpi-value" id="io-kpi-loss">—</div>
-        <div class="kpi-label">Disruption Value</div>
-      </div>
-      <div class="kpi-card warn">
-        <div class="kpi-value" id="io-kpi-sector">—</div>
-        <div class="kpi-label">Sector Shocked</div>
-      </div>
-    </div>
-    <div class="chart-box">
-      <div id="chart-io-shock" style="height:380px">
-        <div class="spinner-wrap" style="color:var(--text-muted)">
-          <i class="fa fa-bolt"></i> Configure and calculate impact above
-        </div>
-      </div>
-    </div>
-    <div id="table-io-shock"></div>
-  </div>
 
-  <!-- Dynamic Simulation -->
-  <div id="tab-io-sim" class="tab-pane">
-    <div class="card">
-      <div class="card-title">Simulation Parameters</div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Shocked Sector</label>
-          <select id="io-sim-sector" class="form-control">
-            {% for s in sectors %}{% set i = loop.index0 %}
-            <option value="{{ i }}" {% if i == 2 %}selected{% endif %}>{{ sector_short.get(s, s) }}</option>
-            {% endfor %}
-          </select>
+      <div id="tab-io-shock" class="tab-pane">
+        <div class="card">
+          <div class="card-title">Shock Configuration</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Shocked Sector</label>
+              <select id="io-shock-sector" class="form-control">
+                {% for s in sectors %}{% set i = loop.index0 %}
+                <option value="{{ i }}">{{ sector_short.get(s, s) }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group" style="min-width:200px">
+              <label>Capacity Loss: <span id="io-shock-sev-display">50</span>%</label>
+              <input type="range" id="io-shock-sev" class="form-control" min="5" max="100" value="50">
+            </div>
+            <div class="form-group" style="justify-content:flex-end">
+              <button id="btn-io-shock" class="btn-primary-custom">
+                <i class="fa fa-bolt"></i> Calculate Impact
+              </button>
+            </div>
+          </div>
         </div>
-        <div class="form-group" style="min-width:180px">
-          <label>Capacity Loss: <span id="io-sim-frac-display">50</span>%</label>
-          <input type="range" id="io-sim-frac" class="form-control" min="5" max="100" value="50">
+        <div id="io-shock-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(2,1fr)">
+          <div class="kpi-card danger"><div class="kpi-value" id="io-kpi-loss">—</div><div class="kpi-label">Disruption Value</div></div>
+          <div class="kpi-card warn"><div class="kpi-value" id="io-kpi-sector">—</div><div class="kpi-label">Sector Shocked</div></div>
         </div>
-        <div class="form-group" style="min-width:140px">
-          <label>Onset Week: <span id="io-sim-onset-display">4</span></label>
-          <input type="range" id="io-sim-onset" class="form-control" min="1" max="20" value="4">
+        <div class="chart-box">
+          <div id="chart-io-shock" style="height:380px">
+            <div class="spinner-wrap" style="color:var(--text-muted)"><i class="fa fa-bolt"></i> Configure and calculate impact above</div>
+          </div>
         </div>
-        <div class="form-group" style="min-width:160px">
-          <label>Duration: <span id="io-sim-dur-display">12</span> wks</label>
-          <input type="range" id="io-sim-dur" class="form-control" min="1" max="40" value="12">
-        </div>
-        <div class="form-group" style="min-width:140px">
-          <label>Horizon: <span id="io-sim-T-display">52</span> wks</label>
-          <input type="range" id="io-sim-T" class="form-control" min="12" max="104" step="4" value="52">
-        </div>
-        <div class="form-group" style="justify-content:flex-end">
-          <button id="btn-io-sim" class="btn-primary-custom">
-            <i class="fa fa-play"></i> Run Simulation
-          </button>
-        </div>
+        <div id="table-io-shock"></div>
       </div>
-    </div>
 
-    <div id="io-sim-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
-      <div class="kpi-card danger">
-        <div class="kpi-value" id="io-sim-kpi-shortage">—</div>
-        <div class="kpi-label">Total IO Shortage</div>
+      <div id="tab-io-sim" class="tab-pane">
+        <div class="card">
+          <div class="card-title">Simulation Parameters</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Shocked Sector</label>
+              <select id="io-sim-sector" class="form-control">
+                {% for s in sectors %}{% set i = loop.index0 %}
+                <option value="{{ i }}" {% if i == 2 %}selected{% endif %}>{{ sector_short.get(s, s) }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group" style="min-width:180px">
+              <label>Capacity Loss: <span id="io-sim-frac-display">50</span>%</label>
+              <input type="range" id="io-sim-frac" class="form-control" min="5" max="100" value="50">
+            </div>
+            <div class="form-group" style="min-width:140px">
+              <label>Onset Week: <span id="io-sim-onset-display">4</span></label>
+              <input type="range" id="io-sim-onset" class="form-control" min="1" max="20" value="4">
+            </div>
+            <div class="form-group" style="min-width:160px">
+              <label>Duration: <span id="io-sim-dur-display">12</span> wks</label>
+              <input type="range" id="io-sim-dur" class="form-control" min="1" max="40" value="12">
+            </div>
+            <div class="form-group" style="min-width:140px">
+              <label>Horizon: <span id="io-sim-T-display">52</span> wks</label>
+              <input type="range" id="io-sim-T" class="form-control" min="12" max="104" step="4" value="52">
+            </div>
+            <div class="form-group" style="justify-content:flex-end">
+              <button id="btn-io-sim" class="btn-primary-custom"><i class="fa fa-play"></i> Run Simulation</button>
+            </div>
+          </div>
+        </div>
+        <div id="io-sim-kpi" style="display:none" class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi-card danger"><div class="kpi-value" id="io-sim-kpi-shortage">—</div><div class="kpi-label">Total IO Shortage</div></div>
+          <div class="kpi-card warn"><div class="kpi-value" id="io-sim-kpi-drop">—</div><div class="kpi-label">Max Output Drop</div></div>
+          <div class="kpi-card"><div class="kpi-value" id="io-sim-kpi-sector">—</div><div class="kpi-label">Most Affected</div></div>
+        </div>
+        <div id="io-sim-results" style="display:none">
+          <div id="io-sim-subtabs" data-tabs>
+            <div class="tab-bar">
+              <button class="tab-btn active" data-tab="tab-io-sim-out">Gross Output</button>
+              <button class="tab-btn" data-tab="tab-io-sim-short">Shortage</button>
+              <button class="tab-btn" data-tab="tab-io-sim-price">Price Index</button>
+              <button class="tab-btn" data-tab="tab-io-sim-cap">Capacity Recovery</button>
+              <button class="tab-btn" data-tab="tab-io-sim-inv">Investment Demand</button>
+            </div>
+            <div id="tab-io-sim-out" class="tab-pane active">
+              <div class="info-box">Gross output per sector from the Leontief (1970) dynamic equation x(t) = M⁻¹·[f(t) − B·x(t−1)]. Dashed = shock onset; dotted = shock end.</div>
+              <div class="chart-box"><div id="chart-io-sim-out" style="height:360px"></div></div>
+            </div>
+            <div id="tab-io-sim-short" class="tab-pane">
+              <div class="info-box">Unmet demand = x_target − x_actual. Propagates upstream via the input-availability ratio.</div>
+              <div class="chart-box"><div id="chart-io-sim-short" style="height:360px"></div></div>
+            </div>
+            <div id="tab-io-sim-price" class="tab-pane">
+              <div class="info-box">Price tatonnement: ΔP/P = λ(1−ratio), λ=0.10. Prices rise when supply is constrained.</div>
+              <div class="chart-box"><div id="chart-io-sim-price" style="height:360px"></div></div>
+            </div>
+            <div id="tab-io-sim-cap" class="tab-pane">
+              <div class="info-box">Effective capacity fraction over time. Capital-intensive sectors rebuild more slowly.</div>
+              <div class="chart-box"><div id="chart-io-sim-cap" style="height:360px"></div></div>
+            </div>
+            <div id="tab-io-sim-inv" class="tab-pane">
+              <div class="info-box">Investment demand B·max(0, Δx(t)): additional capital-good inputs needed for output expansion.</div>
+              <div class="chart-box"><div id="chart-io-sim-inv" style="height:360px"></div></div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="kpi-card warn">
-        <div class="kpi-value" id="io-sim-kpi-drop">—</div>
-        <div class="kpi-label">Max Output Drop</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-value" id="io-sim-kpi-sector">—</div>
-        <div class="kpi-label">Most Affected</div>
-      </div>
-    </div>
 
-    <div id="io-sim-results" style="display:none">
-      <div id="io-sim-subtabs" data-tabs>
-        <div class="tab-bar">
-          <button class="tab-btn active" data-tab="tab-io-sim-out">Gross Output</button>
-          <button class="tab-btn" data-tab="tab-io-sim-short">Shortage</button>
-          <button class="tab-btn" data-tab="tab-io-sim-price">Price Index</button>
-          <button class="tab-btn" data-tab="tab-io-sim-cap">Capacity Recovery</button>
-          <button class="tab-btn" data-tab="tab-io-sim-inv">Investment Demand</button>
-        </div>
-        <div id="tab-io-sim-out" class="tab-pane active">
-          <div class="info-box">Gross output per sector from the Leontief (1970) dynamic equation x(t) = M⁻¹·[f(t) − B·x(t−1)], where M = (I−A−B). Dashed line = shock onset; dotted = shock end.</div>
-          <div class="chart-box"><div id="chart-io-sim-out" style="height:360px"></div></div>
-        </div>
-        <div id="tab-io-sim-short" class="tab-pane">
-          <div class="info-box">Unmet demand = x_target − x_actual. Propagates upstream via the input-availability ratio constraint.</div>
-          <div class="chart-box"><div id="chart-io-sim-short" style="height:360px"></div></div>
-        </div>
-        <div id="tab-io-sim-price" class="tab-pane">
-          <div class="info-box">Price tatonnement: ΔP/P = λ(1−ratio), λ=0.10. Prices rise when supply is constrained, incentivising capacity recovery.</div>
-          <div class="chart-box"><div id="chart-io-sim-price" style="height:360px"></div></div>
-        </div>
-        <div id="tab-io-sim-cap" class="tab-pane">
-          <div class="info-box">Effective capacity fraction over time. Recovery rate = 0.04 / (1 + 5·B_ii) × price signal — capital-intensive sectors (high B_ii) rebuild more slowly.</div>
-          <div class="chart-box"><div id="chart-io-sim-cap" style="height:360px"></div></div>
-        </div>
-        <div id="tab-io-sim-inv" class="tab-pane">
-          <div class="info-box">Investment demand B·max(0, Δx(t)): the additional capital-good inputs needed to support output expansion. Captures the Leontief (1970) investment-acceleration mechanism absent from the static model.</div>
-          <div class="chart-box"><div id="chart-io-sim-inv" style="height:360px"></div></div>
-        </div>
+      <div id="tab-io-calib" class="tab-pane">
+        <div class="info-box">Model calibration vs HMRC/ONS target shares. Error &lt; 5% is acceptable for an 8-sector stylised IO table.</div>
+        <div id="table-io-calib"></div>
       </div>
     </div>
   </div>
 
-  <!-- Calibration -->
-  <div id="tab-io-calib" class="tab-pane">
-    <div class="info-box">
-      Model calibration vs HMRC/ONS target shares. Error &lt; 5% is acceptable for a 8-sector stylised IO table.
+  <!-- ── MRIO Analysis ─────────────────────────────────────────────────────── -->
+  <div id="tab-mrio" class="tab-pane">
+    <div id="mrio-tabs" data-tabs>
+      <div class="tab-bar" style="border-bottom:none;margin-bottom:0">
+        <button class="tab-btn active" data-tab="tab-va">💰 Value-Added</button>
+        <button class="tab-btn" data-tab="tab-china-exp">🇨🇳 China Exposure</button>
+        <button class="tab-btn" data-tab="tab-shock">⚡ Regional Shock</button>
+      </div>
+
+      <div id="tab-va" class="tab-pane active">
+        <div class="two-col">
+          <div class="chart-box">
+            <div class="chart-title">VA Share by Region</div>
+            <div id="chart-va-pie" style="height:380px"><div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div></div>
+          </div>
+          <div class="chart-box">
+            <div class="chart-title">VA Heatmap (Region × Sector, £bn)</div>
+            <div id="chart-va-heatmap" style="height:380px"></div>
+          </div>
+        </div>
+        <div class="card"><div class="card-title">Region Summary</div><div id="table-va-summary"></div></div>
+      </div>
+
+      <div id="tab-china-exp" class="tab-pane">
+        <div class="chart-box">
+          <div class="chart-title">MRIO China Exposure by Supply Chain Stage (%)</div>
+          <div id="chart-mrio-china" style="height:360px"></div>
+        </div>
+        <div class="card"><div class="card-title">China Exposure Table</div><div id="table-mrio-china"></div></div>
+      </div>
+
+      <div id="tab-shock" class="tab-pane">
+        <div class="card">
+          <div class="card-title">Configure Regional Shock</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Shock Region</label>
+              <select id="shock-region" class="form-control">
+                {% for r in regions %}
+                <option value="{{ r }}">{{ region_labels[r] }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Shock Sector</label>
+              <select id="shock-sector" class="form-control">
+                {% for s in sectors %}
+                <option value="{{ s }}">{{ sector_short[s] }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group" style="min-width:200px">
+              <label>Severity: <span id="severity-display">50</span>%</label>
+              <input type="range" id="shock-severity" class="form-control" min="5" max="100" value="50">
+            </div>
+            <div class="form-group" style="justify-content:flex-end">
+              <button id="btn-mrio-shock" class="btn-primary-custom"><i class="fa fa-bolt"></i> Run Shock</button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Shock Impact on Gross Output by Stage</div>
+          <div id="chart-mrio-shock" style="height:380px">
+            <div class="spinner-wrap" style="color:var(--text-muted)"><i class="fa fa-arrow-up"></i> Configure and run a shock above</div>
+          </div>
+        </div>
+        <div id="table-mrio-shock"></div>
+      </div>
     </div>
-    <div id="table-io-calib"></div>
   </div>
+
+  <!-- ── Ghosh Supply-Push ─────────────────────────────────────────────────── -->
+  <div id="tab-ghosh" class="tab-pane">
+    <div id="ghosh-tabs" data-tabs>
+      <div class="tab-bar" style="border-bottom:none;margin-bottom:0">
+        <button class="tab-btn active" data-tab="tab-fl">📊 Forward Linkages</button>
+        <button class="tab-btn" data-tab="tab-quad">🎯 4-Quadrant Map</button>
+        <button class="tab-btn" data-tab="tab-gshock">⚡ Supply Shock</button>
+      </div>
+
+      <div id="tab-fl" class="tab-pane active">
+        <div class="info-box">Ghosh Forward Linkage &gt; 1 = supply-critical sector. A primary input shortage here propagates forward to all downstream buyers.</div>
+        <div class="chart-box"><div id="chart-ghosh-fl" style="height:360px"><div class="spinner-wrap"><div class="spinner-border spinner-border-sm"></div><span>Loading…</span></div></div></div>
+        <div id="table-ghosh-fl"></div>
+      </div>
+
+      <div id="tab-quad" class="tab-pane">
+        <div class="info-box">
+          <strong>Top-right</strong> (BL &amp; FL &gt; 1): structurally central — both demand-pull and supply-push.
+          <strong>Top-left</strong>: supply-push dominant (upstream bottleneck). <strong>Bottom-right</strong>: demand-pull dominant.
+        </div>
+        <div class="chart-box"><div id="chart-ghosh-quad" style="height:480px"></div></div>
+      </div>
+
+      <div id="tab-gshock" class="tab-pane">
+        <div class="card">
+          <div class="card-title">Supply Shock Parameters</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Ghosh Scenario</label>
+              <select id="ghosh-scenario" class="form-control" style="min-width:260px">
+                {% for k, sc in ghosh_scenarios.items() %}
+                <option value="{{ k }}">{{ k }}: {{ sc.name[:55] }}…</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group" style="min-width:200px">
+              <label>Severity: <span id="ghosh-sev-display">50</span>%</label>
+              <input type="range" id="ghosh-severity" class="form-control" min="10" max="100" value="50">
+            </div>
+            <div class="form-group" style="justify-content:flex-end">
+              <button id="btn-ghosh-shock" class="btn-primary-custom"><i class="fa fa-bolt"></i> Run Scenario</button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-box">
+          <div id="chart-ghosh-shock" style="height:380px">
+            <div class="spinner-wrap" style="color:var(--text-muted)"><i class="fa fa-arrow-up"></i> Select a scenario above and run</div>
+          </div>
+          <div id="ghosh-loss" style="font-size:.85rem;color:var(--text-muted);margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
-
 {% endblock %}

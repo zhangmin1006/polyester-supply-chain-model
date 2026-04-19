@@ -84,7 +84,7 @@ class SupplyChainAgent:
     # -- Ordering decision -----------------------------------------------------
 
     def compute_order(self, demand: float, price_signal: float = 1.0,
-                      theta: float = 0.0) -> float:
+                      theta: float = 0.0, alpha: float = 0.3) -> float:
         """
         Order policy.
 
@@ -101,7 +101,7 @@ class SupplyChainAgent:
         base and order explosions over long disruptions).
         """
         self.demand_history.append(demand)
-        self.update_forecast()
+        self.update_forecast(alpha=alpha)
 
         # Adaptive safety stock: increase when supply is uncertain (price > 1.1)
         if price_signal > 1.1:
@@ -245,7 +245,8 @@ class PolyesterSupplyChainABM:
             shock_schedule: Optional[Dict[int, Dict]] = None,
             demand_noise: float = 0.03,
             start_month: int = 1,
-            apply_seasonality: bool = True) -> Dict:
+            apply_seasonality: bool = True,
+            alpha: float = 0.3) -> Dict:
         """
         Simulate the supply chain for T weeks.
 
@@ -362,7 +363,7 @@ class PolyesterSupplyChainABM:
                     # only (no physical delivery — goods come from production).
                     p_signal = 1.0 + shortage / (ag_demand + 1e-12)
                     ag.price = p_signal
-                    order = ag.compute_order(ag_demand, p_signal, theta=4.0)
+                    order = ag.compute_order(ag_demand, p_signal, theta=4.0, alpha=alpha)
                     sector_orders += order
 
                     if ag.pipeline:

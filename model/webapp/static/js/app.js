@@ -304,130 +304,111 @@ async function initGhosh() {
 // ══════════════════════════════════════════════════════════════════════════════
 function initScenarios() {
   bindRange('sim-weeks', 'weeks-display');
-  initCoupledButton();
-  initGSButton();
-}
 
-// ── Bidirectional Coupled button ─────────────────────────────────────────────
-function initCoupledButton() {
-  const cpBtn = document.getElementById('btn-run-coupled');
-  if (!cpBtn) return;
+  // Wire GS lambda display
+  const gsLambdaEl   = document.getElementById('gs-lambda');
+  const gsLambdaDisp = document.getElementById('gs-lambda-display');
+  if (gsLambdaEl && gsLambdaDisp) {
+    gsLambdaDisp.textContent = parseFloat(gsLambdaEl.value).toFixed(2);
+    gsLambdaEl.addEventListener('input', () =>
+      gsLambdaDisp.textContent = parseFloat(gsLambdaEl.value).toFixed(2));
+  }
 
-  cpBtn.addEventListener('click', async () => {
+  const simBtn = document.getElementById('btn-run-sim');
+  if (!simBtn) return;
+
+  simBtn.addEventListener('click', async () => {
     const sc       = document.getElementById('sel-scenario').value;
     const weeks    = document.getElementById('sim-weeks').value;
     const stMonth  = document.getElementById('sim-start-month').value;
     const seasonal = document.getElementById('sim-seasonal').checked;
-
-    cpBtn.disabled = true;
-    cpBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running coupled…';
-    document.getElementById('coupled-result-section').style.display = '';
-    initTabs('#cp-result-tabs');
-    ['cp-chart-io','cp-chart-prices','cp-chart-sf','cp-chart-abm'].forEach(id => spinner(id));
-
-    try {
-      const res  = await fetch('/api/integrated/coupled', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ scenario: sc, weeks, start_month: stMonth, seasonality: seasonal }),
-      });
-      const data = await res.json();
-      if (data.error) { toast('Coupled error: ' + data.error, 'error'); return; }
-
-      // KPIs
-      const k = data.kpis;
-      document.getElementById('cp-kpi-welfare').textContent  = k.welfare;
-      document.getElementById('cp-kpi-price').textContent    = k.max_price + ' · ' + k.max_price_sector;
-      document.getElementById('cp-kpi-shortage').textContent = k.io_shortage;
-      document.getElementById('cp-kpi-recovery').textContent = k.avg_recovery;
-
-      // Charts
-      renderPlotly('cp-chart-io',     data.io_chart);
-      renderPlotly('cp-chart-prices', data.price_chart);
-      renderPlotly('cp-chart-sf',     data.sf_chart);
-      renderPlotly('cp-chart-abm',    data.abm_chart);
-
-      // Metrics tables
-      renderTable('cp-table-bullwhip', data.bullwhip,
-        ['Sector','Order_Variance','Bullwhip_Ratio']);
-      renderTable('cp-table-service', data.service_level,
-        ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
-      renderTable('cp-table-recovery', data.recovery_time,
-        ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
-
-      toast(`Coupled (${sc}) complete — welfare ${k.welfare}`, 'success');
-    } catch(e) { toast('Coupled error: ' + e.message, 'error'); }
-
-    cpBtn.disabled = false;
-    cpBtn.innerHTML = '<i class="fa fa-play"></i> Run Coupled';
-  });
-}
-
-// ── Gauss–Seidel button (wired inside initScenarios) ────────────────────────
-function initGSButton() {
-  const gsBtn = document.getElementById('btn-run-gs');
-  if (!gsBtn) return;
-
-  // wire lambda range display
-  const gsLambdaEl = document.getElementById('gs-lambda');
-  const gsLambdaDisp = document.getElementById('gs-lambda-display');
-  if (gsLambdaEl && gsLambdaDisp) {
-    gsLambdaEl.addEventListener('input', () => {
-      gsLambdaDisp.textContent = parseFloat(gsLambdaEl.value).toFixed(2);
-    });
-  }
-
-  gsBtn.addEventListener('click', async () => {
-    const sc       = document.getElementById('sel-scenario').value;
-    const weeks    = document.getElementById('sim-weeks').value;
     const lambdaA  = parseFloat(document.getElementById('gs-lambda').value);
     const maxInner = parseInt(document.getElementById('gs-max-inner').value);
 
-    gsBtn.disabled = true;
-    gsBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running GS…';
+    simBtn.disabled = true;
+    simBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running…';
+
+    // Show both result sections immediately
+    document.getElementById('coupled-result-section').style.display = '';
     document.getElementById('gs-result-section').style.display = '';
+    initTabs('#cp-result-tabs');
     initTabs('#gs-result-tabs');
+    ['cp-chart-io','cp-chart-prices','cp-chart-sf','cp-chart-abm'].forEach(id => spinner(id));
+    ['gs-chart-io','gs-chart-prices','gs-chart-abm','gs-chart-sf',
+     'gs-chart-gs','gs-chart-A'].forEach(id => spinner(id));
 
-    try {
-      const res  = await fetch('/api/integrated/coupled_gs', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ scenario:sc, weeks, lambda_A:lambdaA, max_inner:maxInner }),
-      });
-      const data = await res.json();
-      if (data.error) { toast('GS error: ' + data.error, 'error'); return; }
+    const cpPayload = { scenario:sc, weeks, start_month:stMonth, seasonality:seasonal };
+    const gsPayload = { scenario:sc, weeks, start_month:stMonth, seasonality:seasonal,
+                        lambda_A:lambdaA, max_inner:maxInner };
 
-      // KPIs
-      const k = data.kpis;
-      document.getElementById('gs-kpi-welfare').textContent  = k.welfare;
-      document.getElementById('gs-kpi-price').textContent    = k.max_price + ' · ' + k.max_price_sector;
-      document.getElementById('gs-kpi-shortage').textContent = k.io_shortage;
-      document.getElementById('gs-kpi-iters').textContent    = k.gs_mean_iters + ' / ' + k.gs_max_iters;
-      document.getElementById('gs-kpi-drift').textContent    = k.A_drift_final;
+    // Run both in parallel
+    const [cpRes, gsRes] = await Promise.allSettled([
+      fetch('/api/integrated/coupled', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(cpPayload),
+      }).then(r => r.json()),
+      fetch('/api/integrated/coupled_gs', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(gsPayload),
+      }).then(r => r.json()),
+    ]);
 
-      // Charts
-      renderPlotly('gs-chart-io',     data.io_chart);
-      renderPlotly('gs-chart-prices', data.price_chart);
-      renderPlotly('gs-chart-abm',    data.abm_chart);
-      renderPlotly('gs-chart-sf',     data.sf_chart);
-      renderPlotly('gs-chart-gs',     data.gs_chart);
-      renderPlotly('gs-chart-A',      data.A_chart);
+    // ── Bidirectional Coupled results ────────────────────────────────────────
+    if (cpRes.status === 'fulfilled') {
+      const data = cpRes.value;
+      if (data.error) {
+        toast('Coupled error: ' + data.error, 'error');
+      } else {
+        const k = data.kpis;
+        document.getElementById('cp-kpi-welfare').textContent  = k.welfare;
+        document.getElementById('cp-kpi-price').textContent    = k.max_price + ' · ' + k.max_price_sector;
+        document.getElementById('cp-kpi-shortage').textContent = k.io_shortage;
+        document.getElementById('cp-kpi-recovery').textContent = k.avg_recovery;
+        renderPlotly('cp-chart-io',     data.io_chart);
+        renderPlotly('cp-chart-prices', data.price_chart);
+        renderPlotly('cp-chart-sf',     data.sf_chart);
+        renderPlotly('cp-chart-abm',    data.abm_chart);
+        renderTable('cp-table-bullwhip', data.bullwhip, ['Sector','Order_Variance','Bullwhip_Ratio']);
+        renderTable('cp-table-service',  data.service_level, ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
+        renderTable('cp-table-recovery', data.recovery_time, ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
+        toast(`Coupled (${sc}) — welfare ${k.welfare}`, 'success');
+      }
+    } else {
+      toast('Coupled simulation error: ' + cpRes.reason, 'error');
+    }
 
-      // Tables
-      renderTable('gs-table-bullwhip', data.bullwhip,
-        ['Sector','Order_Variance','Bullwhip_Ratio']);
-      renderTable('gs-table-service', data.service_level,
-        ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
-      renderTable('gs-table-recovery', data.recovery_time,
-        ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
+    // ── Gauss–Seidel results ─────────────────────────────────────────────────
+    if (gsRes.status === 'fulfilled') {
+      const data = gsRes.value;
+      if (data.error) {
+        toast('GS error: ' + data.error, 'error');
+      } else {
+        const k = data.kpis;
+        document.getElementById('gs-kpi-welfare').textContent  = k.welfare;
+        document.getElementById('gs-kpi-price').textContent    = k.max_price + ' · ' + k.max_price_sector;
+        document.getElementById('gs-kpi-shortage').textContent = k.io_shortage;
+        document.getElementById('gs-kpi-iters').textContent    = k.gs_mean_iters + ' / ' + k.gs_max_iters;
+        document.getElementById('gs-kpi-drift').textContent    = k.A_drift_final;
+        renderPlotly('gs-chart-io',     data.io_chart);
+        renderPlotly('gs-chart-prices', data.price_chart);
+        renderPlotly('gs-chart-abm',    data.abm_chart);
+        renderPlotly('gs-chart-sf',     data.sf_chart);
+        renderPlotly('gs-chart-gs',     data.gs_chart);
+        renderPlotly('gs-chart-A',      data.A_chart);
+        renderTable('gs-table-bullwhip', data.bullwhip, ['Sector','Order_Variance','Bullwhip_Ratio']);
+        renderTable('gs-table-service',  data.service_level, ['Sector','Service_Level_%','Fill_Rate_%','Total_Shortage']);
+        renderTable('gs-table-recovery', data.recovery_time, ['Sector','Recovery_Week','Trough_Cap_%','Shock_Onset_Week']);
+        toast(`GS (${sc}) — mean ${k.gs_mean_iters} iters`, 'success');
+      }
+    } else {
+      toast('GS simulation error: ' + gsRes.reason, 'error');
+    }
 
-      toast(`GS simulation (${sc}) complete — mean ${k.gs_mean_iters} iters`, 'success');
-    } catch(e) { toast('GS error: ' + e.message, 'error'); }
-
-    gsBtn.disabled = false;
-    gsBtn.innerHTML = '<i class="fa fa-play"></i> Run GS Simulation';
+    simBtn.disabled = false;
+    simBtn.innerHTML = '<i class="fa fa-play"></i> Run Simulation';
   });
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PAGE: VALIDATION
@@ -504,7 +485,10 @@ function initGallery() {
 // PAGE: IO ANALYSIS
 // ══════════════════════════════════════════════════════════════════════════════
 async function initIO() {
+  initTabs('#io-top-tabs');
   initTabs('#io-tabs');
+  initTabs('#mrio-tabs');
+  initTabs('#ghosh-tabs');
   bindRange('io-shock-sev',   'io-shock-sev-display');
   bindRange('io-sim-frac',    'io-sim-frac-display');
   bindRange('io-sim-onset',   'io-sim-onset-display');
@@ -587,6 +571,93 @@ async function initIO() {
       } catch(e) { toast('Simulation error: ' + e.message, 'error'); }
       simBtn.disabled = false;
       simBtn.innerHTML = '<i class="fa fa-play"></i> Run Simulation';
+    });
+  }
+
+  // ── MRIO section (lazy-loaded when tab becomes visible) ──────────────────
+  let mrioLoaded = false;
+  async function loadMRIO() {
+    if (mrioLoaded) return;
+    mrioLoaded = true;
+    spinner('chart-va-pie', 'Loading…');
+    const data = await (await fetch('/api/mrio/va')).json();
+    renderPlotly('chart-va-pie',     data.pie_chart);
+    renderPlotly('chart-va-heatmap', data.heatmap_chart);
+    renderTable('table-va-summary',  data.summary_table,
+      ['Region','Value_Added_GBP_bn','Share_%']);
+    const chinaData = await (await fetch('/api/mrio/china-exposure')).json();
+    renderPlotly('chart-mrio-china', chinaData.figure);
+    renderTable('table-mrio-china',  chinaData.table,
+      ['Stage','Direct_%','Effective_%']);
+  }
+
+  document.querySelectorAll('#io-top-tabs .tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.tab === 'tab-mrio') loadMRIO();
+      if (btn.dataset.tab === 'tab-ghosh') loadGhoshSection();
+    });
+  });
+
+  bindRange('shock-severity', 'severity-display');
+  const mShockBtn = document.getElementById('btn-mrio-shock');
+  if (mShockBtn) {
+    mShockBtn.addEventListener('click', async () => {
+      mShockBtn.disabled = true;
+      mShockBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running…';
+      spinner('chart-mrio-shock', 'Simulating…');
+      const region = document.getElementById('shock-region').value;
+      const sector = document.getElementById('shock-sector').value;
+      const sev    = document.getElementById('shock-severity').value / 100;
+      try {
+        const res  = await fetch('/api/mrio/shock', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ region, sector, severity: sev }),
+        });
+        const data = await res.json();
+        renderPlotly('chart-mrio-shock', data.figure);
+        renderTable('table-mrio-shock', data.table, ['Sector','Output_Change_%']);
+        toast('Regional shock complete', 'success');
+      } catch(e) { toast('Error: ' + e.message, 'error'); }
+      mShockBtn.disabled = false;
+      mShockBtn.innerHTML = '<i class="fa fa-bolt"></i> Run Shock';
+    });
+  }
+
+  // ── Ghosh section ─────────────────────────────────────────────────────────
+  let ghoshLoaded = false;
+  async function loadGhoshSection() {
+    if (ghoshLoaded) return;
+    ghoshLoaded = true;
+    spinner('chart-ghosh-fl', 'Loading…');
+    const data = await (await fetch('/api/ghosh/analysis')).json();
+    renderPlotly('chart-ghosh-fl',   data.fl_chart);
+    renderPlotly('chart-ghosh-quad', data.quad_chart);
+    renderTable('table-ghosh-fl',    data.fl_table,
+      ['Sector','Forward_Linkage','BL_Normalised','FL_Normalised']);
+  }
+
+  bindRange('ghosh-severity', 'ghosh-sev-display');
+  const gShockBtn = document.getElementById('btn-ghosh-shock');
+  if (gShockBtn) {
+    gShockBtn.addEventListener('click', async () => {
+      gShockBtn.disabled = true;
+      gShockBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running…';
+      spinner('chart-ghosh-shock', 'Simulating…');
+      const sc  = document.getElementById('ghosh-scenario').value;
+      const sev = document.getElementById('ghosh-severity').value / 100;
+      try {
+        const res  = await fetch('/api/ghosh/shock', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ scenario: sc, severity: sev }),
+        });
+        const data = await res.json();
+        renderPlotly('chart-ghosh-shock', data.figure);
+        const lossEl = document.getElementById('ghosh-loss');
+        if (lossEl) lossEl.textContent = data.summary || '';
+        toast('Ghosh scenario complete', 'success');
+      } catch(e) { toast('Error: ' + e.message, 'error'); }
+      gShockBtn.disabled = false;
+      gShockBtn.innerHTML = '<i class="fa fa-bolt"></i> Run Scenario';
     });
   }
 }
@@ -691,6 +762,22 @@ function initABM() {
   bindRange('abm-dur',    'abm-dur-display');
   bindRange('abm-T',      'abm-T-display');
 
+  // Advanced parameter sliders with formatted display
+  const alphaInp = document.getElementById('abm-alpha');
+  const alphaDisp = document.getElementById('abm-alpha-display');
+  if (alphaInp && alphaDisp) {
+    alphaDisp.textContent = parseFloat(alphaInp.value).toFixed(2);
+    alphaInp.addEventListener('input', () =>
+      alphaDisp.textContent = parseFloat(alphaInp.value).toFixed(2));
+  }
+  const noiseInp = document.getElementById('abm-noise');
+  const noiseDisp = document.getElementById('abm-noise-display');
+  if (noiseInp && noiseDisp) {
+    noiseDisp.textContent = parseFloat(noiseInp.value).toFixed(3);
+    noiseInp.addEventListener('input', () =>
+      noiseDisp.textContent = parseFloat(noiseInp.value).toFixed(3));
+  }
+
   const runBtn = document.getElementById('btn-abm-run');
   if (!runBtn) return;
 
@@ -711,6 +798,8 @@ function initABM() {
       T:             parseInt(document.getElementById('abm-T').value),
       start_month:   parseInt(document.getElementById('abm-month').value),
       seasonal:      document.getElementById('abm-seasonal').checked,
+      alpha:         parseFloat(document.getElementById('abm-alpha')?.value ?? 0.3),
+      demand_noise:  parseFloat(document.getElementById('abm-noise')?.value ?? 0.03),
     };
 
     try {

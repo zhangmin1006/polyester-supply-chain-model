@@ -1016,7 +1016,11 @@ def api_scenarios_all():
 
 @app.route("/io")
 def io_page():
-    return render_template("io.html", sectors=SECTORS, sector_short=SECTOR_SHORT)
+    from mrio_model import REGIONS, REGION_LABELS
+    from ghosh_model import GHOSH_SCENARIOS
+    return render_template("io.html", sectors=SECTORS, sector_short=SECTOR_SHORT,
+        regions=REGIONS, region_labels=REGION_LABELS,
+        ghosh_scenarios=GHOSH_SCENARIOS)
 
 @app.route("/cge")
 def cge_page():
@@ -1329,21 +1333,24 @@ def api_cge_substitution():
 @app.route("/api/abm/run", methods=["POST"])
 def api_abm_run():
     from abm_model import PolyesterSupplyChainABM
-    data     = request.json or {}
-    sec_idx  = int(data.get("sector_idx", 2))
-    fraction = float(data.get("shock_fraction", 0.5))
-    onset    = int(data.get("onset_week", 4))
-    duration = int(data.get("duration_weeks", 12))
-    T        = int(data.get("T", 52))
-    st_month = int(data.get("start_month", 1))
-    seasonal = bool(data.get("seasonal", True))
+    data         = request.json or {}
+    sec_idx      = int(data.get("sector_idx", 2))
+    fraction     = float(data.get("shock_fraction", 0.5))
+    onset        = int(data.get("onset_week", 4))
+    duration     = int(data.get("duration_weeks", 12))
+    T            = int(data.get("T", 52))
+    st_month     = int(data.get("start_month", 1))
+    seasonal     = bool(data.get("seasonal", True))
+    demand_noise = float(data.get("demand_noise", 0.03))
+    alpha        = float(data.get("alpha", 0.3))
 
     abm_schedule = {onset: [{"sector": sec_idx, "country": "China",
                               "severity": fraction, "duration": duration}]}
 
     abm = PolyesterSupplyChainABM(agents_per_sector=3)
     r   = abm.run(T=T, baseline_demand=1.0, shock_schedule=abm_schedule,
-                  demand_noise=0.03, start_month=st_month, apply_seasonality=seasonal)
+                  demand_noise=demand_noise, start_month=st_month,
+                  apply_seasonality=seasonal, alpha=alpha)
     bw  = abm.bullwhip_ratio(r)
     sl  = abm.service_level(r)
     rt  = abm.recovery_time(r)
