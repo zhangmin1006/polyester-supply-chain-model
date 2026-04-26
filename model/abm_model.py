@@ -212,28 +212,62 @@ class PolyesterSupplyChainABM:
     Multiple agents can exist per sector (geographic multi-sourcing).
     """
 
-    def __init__(self, agents_per_sector: int = 3):
+    def __init__(self, agents_per_sector = 3):
+        """
+        Parameters
+        ----------
+        agents_per_sector : int or list[int]
+            Number of firms (geographic sourcing agents) to create at each stage.
+            Pass a single int to use the same count everywhere, or a list of
+            N_SECTORS ints to set counts individually.  Each sector's count is
+            silently capped at the number of available geographies in
+            STAGE_GEOGRAPHY (e.g. UK_Retail has only 1 source country).
+        """
         self.sectors = SECTORS
         self.n       = N_SECTORS
         self.agents: List[List[SupplyChainAgent]] = []  # [sector][agent]
         self._build_network(agents_per_sector)
 
-    def _build_network(self, agents_per_sector: int):
+    def _build_network(self, agents_per_sector):
         """
         Create agents at each stage weighted by real geographic shares.
+
+        agents_per_sector : int (same for all stages) or list[int] (per-stage).
         """
+        if isinstance(agents_per_sector, int):
+            counts = [agents_per_sector] * self.n
+        else:
+            counts = [int(c) for c in agents_per_sector]
+            if len(counts) != self.n:
+                raise ValueError(
+                    f"agents_per_sector list length {len(counts)} "
+                    f"must equal N_SECTORS={self.n}"
+                )
+
         for s_idx, sector in enumerate(SECTORS):
             geo = STAGE_GEOGRAPHY.get(sector, {"Other": 1.0})
-            # Select top countries by share (up to agents_per_sector)
-            top = sorted(geo.items(), key=lambda x: -x[1])[:agents_per_sector]
+            # Select top countries by share, up to the requested count.
+            # Silently capped by how many geographies exist for this sector.
+            n_agents = max(1, counts[s_idx])
+            top = sorted(geo.items(), key=lambda x: -x[1])[:n_agents]
+
+            # Normalise to 1.0: top-N agents only cover a subset of global
+            # capacity (e.g. 3 agents at Chemical = 0.67 of total).  Without
+            # normalisation the ABM runs below full capacity at baseline, which
+            # understates vulnerability and inflates bullwhip ratios.
+            raw_shares = [share for _, share in top]
+            share_sum  = sum(raw_shares) or 1.0
+            top_normalised = [(country, share / share_sum)
+                              for (country, share), _ in zip(top, raw_shares)]
+
             sector_agents = []
-            for country, share in top:
+            for country, norm_share in top_normalised:
                 lt = _lead_time_from_real_data(s_idx, country)
                 agent = SupplyChainAgent(
                     name          = f"{sector}_{country}",
                     sector_idx    = s_idx,
                     country       = country,
-                    base_capacity = share,   # normalised to 1 = global share
+                    base_capacity = norm_share,  # normalised so sector sums to 1.0
                     lead_time     = lt,
                 )
                 sector_agents.append(agent)

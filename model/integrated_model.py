@@ -37,6 +37,7 @@ from resilience import (
     system_resilience_summary, shortage_value_gbp,
 )
 from real_data import SECTORS, N_SECTORS
+from policies import Policy
 
 
 class IntegratedSupplyChainModel:
@@ -61,6 +62,128 @@ class IntegratedSupplyChainModel:
             sum(ag.base_capacity for ag in self.abm.agents[j])
             for j in range(N_SECTORS)
         ])
+
+    def rebuild_abm(self, agents_per_sector) -> None:
+        """
+        Replace the ABM network with new per-sector firm counts.
+
+        Parameters
+        ----------
+        agents_per_sector : int or list[int]
+            Passed directly to PolyesterSupplyChainABM.  A list must have
+            N_SECTORS entries; an int applies to every stage.
+
+        Call this before run_coupled() or run_coupled_gs() whenever the user
+        changes the firm configuration so the coupled simulation uses the
+        updated network.  The IO and CGE components are unaffected.
+        """
+        self.abm = PolyesterSupplyChainABM(agents_per_sector=agents_per_sector)
+        # Recompute baseline order normalisation used by _abm_to_demand_mults()
+        self._abm_baseline_orders = np.array([
+            sum(ag.base_capacity for ag in self.abm.agents[j])
+            for j in range(N_SECTORS)
+        ])
+
+    # ── Policy helpers ────────────────────────────────────────────────────────
+
+    def _apply_policy_to_abm(self, policy: Optional[Policy]) -> None:
+        """Apply pre-shock policy interventions to ABM agent state."""
+        if policy is None:
+            return
+
+        # Buffer sectors: scale safety stock and initial inventory
+        for sector_name, mult in policy.buffer_sectors.items():
+            if sector_name not in SECTORS:
+                continue
+            s_idx = SECTORS.index(sector_name)
+            for ag in self.abm.agents[s_idx]:
+                ag.safety_stock *= mult
+                ag.inventory    *= mult
+
+        # Diversify sectors: shift divert_fraction of China capacity to non-China
+        for sector_name, divert in policy.diversify_sectors.items():
+            if sector_name not in SECTORS:
+                continue
+            s_idx = SECTORS.index(sector_name)
+            agents = self.abm.agents[s_idx]
+            china_agents = [ag for ag in agents
+                            if ag.country in ("China", "China_PTA", "China_MEG")]
+            other_agents = [ag for ag in agents
+                            if ag.country not in ("China", "China_PTA", "China_MEG")]
+            if not china_agents or not other_agents:
+                continue
+            freed = sum(ag.base_capacity * divert for ag in china_agents)
+            for ag in china_agents:
+                ag.base_capacity *= (1.0 - divert)
+                ag.capacity       = ag.base_capacity
+            other_total = sum(ag.base_capacity for ag in other_agents) + 1e-12
+            for ag in other_agents:
+                ag.base_capacity += freed * (ag.base_capacity / other_total)
+                ag.capacity       = ag.base_capacity
+
+        # Recompute baseline orders after capacity changes
+        self._abm_baseline_orders = np.array([
+            sum(ag.base_capacity for ag in self.abm.agents[j])
+            for j in range(N_SECTORS)
+        ])
+
+    def _policy_rec_mult(self, policy: Optional[Policy]) -> np.ndarray:
+        """Return per-sector recovery rate multipliers from policy.recovery_boost."""
+        mult = np.ones(N_SECTORS)
+        if policy is not None:
+            for sector_name, boost in policy.recovery_boost.items():
+                if sector_name in SECTORS:
+                    mult[SECTORS.index(sector_name)] = float(boost)
+        return mult
+
+    def _reserve_schedule(self, policy: Optional[Policy],
+                          onset_week: int, T: int) -> np.ndarray:
+        """
+        Return (T, N_SECTORS) array of capacity boosts from policy.reserve_release.
+        Non-zero only during [onset + delay, onset + delay + duration).
+        """
+        boosts = np.zeros((T, N_SECTORS))
+        if policy is None or not policy.reserve_release:
+            return boosts
+        t_start = onset_week + policy.release_delay_weeks
+        t_end   = t_start + policy.release_duration_weeks
+        for sector_name, frac in policy.reserve_release.items():
+            if sector_name not in SECTORS:
+                continue
+            s_idx = SECTORS.index(sector_name)
+            for t in range(max(0, t_start), min(T, t_end)):
+                boosts[t, s_idx] = float(frac)
+        return boosts
+
+    def _policy_adjusted_io_sched(self, io_sched: Dict, policy: Optional[Policy]) -> Dict:
+        """
+        Scale IO shock fractions down at diversified stages.
+
+        For each sector in policy.diversify_sectors, a fraction `divert` of
+        China capacity has been moved to non-China suppliers.  The IO shock was
+        calibrated assuming the original China dependency, so when China is
+        disrupted the effective sector-level shock is proportionally smaller:
+
+            adjusted_s_frac = s_frac * (1 - divert)
+
+        This mirrors how the ABM agent capacities are redistributed in
+        _apply_policy_to_abm and ensures IO/CGE welfare responds to P2.
+        """
+        if policy is None or not policy.diversify_sectors:
+            return io_sched
+        adj = {}
+        for t, shocks in io_sched.items():
+            new_shocks = []
+            if isinstance(shocks, tuple):
+                shocks = [shocks]
+            for s_idx, s_frac in shocks:
+                sec_name = SECTORS[s_idx] if s_idx < len(SECTORS) else None
+                if sec_name and sec_name in policy.diversify_sectors:
+                    divert = policy.diversify_sectors[sec_name]
+                    s_frac = s_frac * (1.0 - divert)
+                new_shocks.append((s_idx, s_frac))
+            adj[t] = new_shocks
+        return adj
 
     # ── Baseline characterisation ─────────────────────────────────────────────
 
@@ -199,6 +322,8 @@ class IntegratedSupplyChainModel:
                     demand_noise: float = 0.03,
                     start_month: int = 1,
                     apply_seasonality: bool = True,
+                    abm_demand_feedback: bool = False,
+                    policy: Optional[Policy] = None,
                     verbose: bool = False) -> Dict:
         """
         Bidirectional per-period coupled simulation: IO ↔ CGE ↔ ABM.
@@ -207,17 +332,20 @@ class IntegratedSupplyChainModel:
           1. IO step   → x(t), shortage(t), supply_fractions(t)
           2. CGE step  → prices(t) given IO supply + prior ABM demand
           3. ABM step  → orders(t) using CGE prices + IO fill rates
-          4. Carry forward: ABM orders → next-period CGE demand mults
-                            CGE prices → IO capacity recovery multiplier
+          4. Carry forward: CGE prices → IO capacity recovery multiplier
+                            ABM orders → next-period CGE demand mults (if abm_demand_feedback)
 
-        Feedback channels (all bidirectional):
+        Feedback channels:
           IO  → CGE  : supply_fractions (sector output / baseline)
           IO  → ABM  : supply_fractions as pipeline fill-rate modifier
           CGE → ABM  : equilibrium price vector (drives precautionary ordering)
-          ABM → CGE  : aggregate order multipliers (demand-side pressure)
           CGE → IO   : price signal amplifies capacity recovery speed
+          ABM → CGE  : EMA-smoothed order mults (optional; abm_demand_feedback=True)
+                       Smoothing weight 0.10 dampens Beer-Game bullwhip so only
+                       persistent demand shifts enter the CGE equilibrium.
         """
-        io_sched  = build_io_shock_schedule(scenario)
+        io_sched  = self._policy_adjusted_io_sched(
+                        build_io_shock_schedule(scenario), policy)
         abm_sched = scenario.abm_schedule
         n         = N_SECTORS
 
@@ -248,6 +376,12 @@ class IntegratedSupplyChainModel:
         io_cap[0]   = capacity
 
         self.abm.reset()
+        self._apply_policy_to_abm(policy)
+
+        # Pre-compute policy arrays
+        pol_rec_mult  = self._policy_rec_mult(policy)   # (n,) static multiplier
+        reserve_sched = self._reserve_schedule(policy, scenario.onset_week, T)  # (T, n)
+        B_diag_manual = np.diag(self.io.B)              # for manual recovery step
 
         for t in range(1, T):
             # ── Supply shock ────────────────────────────────────────────────
@@ -259,14 +393,26 @@ class IntegratedSupplyChainModel:
                     capacity[s_idx] = max(0.0, capacity[s_idx] * (1 - s_frac))
 
             # ── 1. IO step ──────────────────────────────────────────────────
-            # IO uses exogenous final demand — consumer demand doesn't collapse
-            # with agent order behaviour. ABM demand_mults feed CGE only.
-            # buf_ptr points to the slot for x(t); x(t-1) is at (buf_ptr-1).
-            # Write x(t) into the buffer AFTER computing it, then advance ptr.
             fd = self.fd_base
-            x_t, sht_t, sf_t = self.io.io_step(
-                x_buf, buf_ptr, capacity, fd, self.x_base, cap_rec_mult,
-            )
+            reserve_t = reserve_sched[t]
+            combined_rec = cap_rec_mult * pol_rec_mult   # CGE price × policy boost
+
+            if reserve_t.any():
+                # Reserve active: boost effective capacity for output, but track
+                # real capacity recovery separately so the reserve doesn't persist.
+                eff_cap = np.minimum(capacity + reserve_t, 1.0)
+                x_t, sht_t, sf_t = self.io.io_step(
+                    x_buf, buf_ptr, eff_cap, fd, self.x_base, combined_rec,
+                    apply_recovery=False,
+                )
+                for i in range(n):
+                    if capacity[i] < 1.0:
+                        base_rate    = 0.04 / (1.0 + 5.0 * B_diag_manual[i])
+                        capacity[i]  = min(1.0, capacity[i] + base_rate * float(combined_rec[i]))
+            else:
+                x_t, sht_t, sf_t = self.io.io_step(
+                    x_buf, buf_ptr, capacity, fd, self.x_base, combined_rec,
+                )
             x_buf[buf_ptr] = x_t
             buf_ptr = (buf_ptr + 1) % buf_len
 
@@ -285,8 +431,13 @@ class IntegratedSupplyChainModel:
             )
 
             # ── 4. Carry-forward ────────────────────────────────────────────
-            # demand_mults stays at 1.0 (exogenous); ABM→CGE demand feedback
-            # would destabilise prices via Beer Game bullwhip.
+            # CGE final demand stays exogenous by default.  When
+            # abm_demand_feedback=True, EMA-smooth ABM orders → demand_mults so
+            # only persistent ordering shifts (not short-term bullwhip spikes)
+            # influence CGE equilibrium prices next period.
+            if abm_demand_feedback:
+                raw_mults    = self._abm_to_demand_mults(ord_t)
+                demand_mults = 0.90 * demand_mults + 0.10 * np.clip(raw_mults, 0.5, 1.5)
             cap_rec_mult = np.clip(cge_prices, 0.5, 3.0)
 
             # Store
@@ -367,6 +518,8 @@ class IntegratedSupplyChainModel:
                        demand_noise: float = 0.03,
                        start_month: int = 1,
                        apply_seasonality: bool = True,
+                       abm_demand_feedback: bool = False,
+                       policy: Optional[Policy] = None,
                        verbose: bool = False) -> Dict:
         """
         Bidirectional iterative coupling following the CGEABM document architecture.
@@ -397,7 +550,8 @@ class IntegratedSupplyChainModel:
         eps_x      : convergence tolerance on ‖Δx‖_max / x_baseline.
         """
         from io_model import A_BASE, B_BASE
-        io_sched  = build_io_shock_schedule(scenario)
+        io_sched  = self._policy_adjusted_io_sched(
+                        build_io_shock_schedule(scenario), policy)
         abm_sched = scenario.abm_schedule
         n         = N_SECTORS
 
@@ -440,6 +594,11 @@ class IntegratedSupplyChainModel:
         A_ts[0]    = A_current.copy()
 
         self.abm.reset()
+        self._apply_policy_to_abm(policy)
+
+        # Pre-compute policy arrays
+        pol_rec_mult  = self._policy_rec_mult(policy)   # (n,)
+        reserve_sched = self._reserve_schedule(policy, scenario.onset_week, T)  # (T, n)
 
         abm_inv  = np.zeros((T, n))
 
@@ -464,7 +623,9 @@ class IntegratedSupplyChainModel:
             x_k      = x_prev.copy()
             sf_k     = np.clip(x_k / (self.x_base + 1e-12), 0.0, 1.0)
             sht_k    = np.zeros(n)
-            cap_snap = capacity.copy()   # frozen capacity for all GS iterations
+            reserve_t = reserve_sched[t]
+            # cap_snap includes reserve boost for output; GS uses this boosted snap
+            cap_snap  = np.minimum(capacity + reserve_t, 1.0)
 
             delta_A = 0.0
             delta_x = 0.0
@@ -478,12 +639,13 @@ class IntegratedSupplyChainModel:
                 )
 
                 # Step 2 — IO: output given current A_k.
-                # Pass cap_snap copy so io_step recovery does not accumulate.
-                # buf_ptr is the write slot for x(t); x(t-1) is at (buf_ptr-1).
-                cap_iter = cap_snap.copy()
+                # apply_recovery=False so capacity recovery does not accumulate
+                # across GS iterations; it is applied exactly once after
+                # convergence (below) using the converged price vector.
                 x_new, sht_new, sf_k = self.io.io_step(
-                    x_buf, buf_ptr, cap_iter,
+                    x_buf, buf_ptr, cap_snap.copy(),
                     self.fd_base, self.x_base, cap_rec_mult,
+                    apply_recovery=False,
                 )
                 sht_k = sht_new
 
@@ -545,18 +707,31 @@ class IntegratedSupplyChainModel:
             K             = (1.0 - delta) * K + I_replacement + I_expansion
             cap_from_K    = np.clip(K / (K_base + 1e-12), 0.0, 2.0)
 
-            # Apply one round of io_step capacity recovery to update capacity
-            capacity = cap_iter.copy()   # take recovery from last GS iteration
-            capacity = np.minimum(capacity, cap_from_K)
-
-            price_rec = np.clip(prices_k, 1.0, 3.0)
+            # ── One-shot capacity recovery with converged prices ─────────────
+            # Start from cap_snap (capacity at start of period t, post-shock)
+            # and apply exactly ONE recovery step using the converged price
+            # vector.  This corrects the prior double-recovery bug where
+            # io_step applied recovery during GS iterations AND a second manual
+            # step ran here afterward.
+            B_diag    = np.diag(self.io.B)
+            # Combined recovery multiplier: CGE price signal × policy boost
+            price_rec = np.clip(prices_k, 0.5, 3.0) * pol_rec_mult
+            # Recover from pre-shock capacity (not boosted snap) so reserve
+            # doesn't permanently accelerate underlying infrastructure rebuild.
+            capacity  = capacity.copy()   # already the pre-period value (cap_snap minus reserve)
             for i in range(n):
                 if capacity[i] < 1.0:
-                    capacity[i] = min(1.0, capacity[i] + 0.02 * float(price_rec[i]))
+                    base_rate    = 0.04 / (1.0 + 5.0 * B_diag[i])
+                    capacity[i]  = min(1.0, capacity[i] + base_rate * float(price_rec[i]))
+            capacity = np.minimum(capacity, cap_from_K)
 
             # ── Carry-forward state ──────────────────────────────────────────
             cap_rec_mult = np.clip(prices_k, 0.5, 3.0)
-            # demand_mults stays at 1.0 (exogenous CGE final demand)
+            # Optional ABM→CGE demand feedback: EMA-smooth ABM orders so only
+            # sustained demand shifts (not short-term bullwhip) reach CGE.
+            if abm_demand_feedback:
+                raw_mults    = self._abm_to_demand_mults(ord_k)
+                demand_mults = 0.90 * demand_mults + 0.10 * np.clip(raw_mults, 0.5, 1.5)
             cge_prices   = prices_k.copy()
             x_prev       = x_k.copy()
 

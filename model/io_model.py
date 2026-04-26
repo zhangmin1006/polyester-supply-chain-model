@@ -45,7 +45,8 @@ from real_data import SECTORS, N_SECTORS, TRANSIT_DAYS, STAGE_RETAIL_VALUE_SHARE
 #     polyester feedstock; IEA/ICIS cost-structure literature).
 #
 # Hawkins-Simon column sums:
-#   0|0.20|0.30|0.39|0.256|0.182|0.321|0.225 — all < 1 ✓
+#   0|0.20|0.62|0.84|0.506|0.182|0.321|0.225 — all < 1 ✓
+#   PET col = A[Oil→PET](0.04) + A[Chem→PET](0.25) + A[PTA→PET](0.55) = 0.84
 
 _vs = list(STAGE_RETAIL_VALUE_SHARE.values())
 
@@ -64,16 +65,22 @@ A_BASE[6, 7] = _vs[6] / _vs[7] * 0.56   # Wholesale → Retail   = 0.225
 # Sources:
 #   Oil→Chem:   IEA/ICIS — crude to naphtha feedstock ≈ 20% of Chemical cost
 #   Chem→PTA:   ICIS PTA cost structure 2023 — p-Xylene ≈ 62% of PTA cash cost
-#               (prev. 0.30 was undercalibrated; p-Xylene is the dominant input)
-#   PTA→PET:    ICIS PET cost structure — PTA+MEG ≈ 80% of PET cost, PTA alone ≈ 55%
-#               (prev. 0.35 maintained; MEG is from Chemical sector separately)
+#   Chem→PET:   ICIS PET cost structure — MEG ≈ 25% of PET cost
+#               (NEW: Chemical_Processing produces MEG which feeds PET directly,
+#               bypassing PTA.  Previously missing, causing underestimation of
+#               Chemical shock propagation to PET.)
+#   PTA→PET:    ICIS PET cost structure — PTA ≈ 55% of PET cost
+#               (corrected from 0.35; MEG now modelled separately via Chem→PET)
 #   PET→Fabric: ICIS/CIRFS — polyester staple/filament ≈ 55% of fabric cost
-#               (prev. 0.20 was low; updated to 0.45 per industry cost structure)
-#               Hawkins-Simon check: col 4 sum = 0.0555+0.45 = 0.506 < 1 ✓
-#   Oil→PET:    IEA estimate for polymerisation energy — kept at 0.04
+#   Oil→PET:    IEA estimate for polymerisation energy
+#
+# Hawkins-Simon column sums after update:
+#   col[PET] = A[PTA→PET] + A[Chem→PET] + A[Oil→PET] = 0.55+0.25+0.04 = 0.84 < 1 ✓
+#   All other columns unchanged.
 A_BASE[0, 1] = 0.20   # Oil → Chemical processing   (IEA naphtha feedstock)
 A_BASE[1, 2] = 0.62   # Chemical → PTA production   (ICIS: p-Xylene 62% of PTA cost)
-A_BASE[2, 3] = 0.35   # PTA → PET resin/yarn         (ICIS: PTA ~55% of PET, MEG rest)
+A_BASE[1, 3] = 0.25   # Chemical → PET resin/yarn   (ICIS: MEG 25% of PET cost)  ← NEW
+A_BASE[2, 3] = 0.55   # PTA → PET resin/yarn         (ICIS: PTA 55% of PET cost; was 0.35)
 A_BASE[3, 4] = 0.45   # PET → Fabric weaving          (ICIS/CIRFS: polyester fibre ~55% fabric)
 A_BASE[0, 3] = 0.04   # Oil → PET (polymerisation energy, IEA estimate)
 
@@ -84,7 +91,11 @@ assert (A_BASE.sum(axis=0) < 1).all(), "Hawkins-Simon condition violated"
 # ── Capital coefficient matrix ────────────────────────────────────────────────
 # b_ij = additional investment in sector i needed to expand sector j output by 1.
 # Diagonal: capital intensity of each sector (higher upstream = more capital).
-B_BASE = np.diag([0.40, 0.35, 0.30, 0.22, 0.15, 0.08, 0.12, 0.06])
+# Note: PET (col 3) has A-column-sum = 0.84 (high intermediate input share after
+# adding MEG and correcting PTA in Issue 8).  Dynamic Hawkins-Simon requires
+# A+B column sums < 1, so B[3,3] ≤ 1-0.84 = 0.16.  Using 0.10 is consistent
+# with the thin GVA margins typical of commodity chemical polymerisation plants.
+B_BASE = np.diag([0.40, 0.35, 0.30, 0.10, 0.15, 0.08, 0.12, 0.06])
 
 
 # ── Delivery lag matrix (weeks) ───────────────────────────────────────────────
@@ -385,6 +396,7 @@ class DynamicIOModel:
                 fd: np.ndarray,
                 x_baseline: np.ndarray,
                 cap_recovery_mult: Optional[np.ndarray] = None,
+                apply_recovery: bool = True,
                 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         One period of the dynamic IO model using a circular history buffer.
@@ -400,6 +412,9 @@ class DynamicIOModel:
         x_baseline       : (n,) steady-state (t=0) output — used to cap actual output.
         cap_recovery_mult: (n,) multiplier on base recovery rate from CGE prices.
                            Pass None to use rate=1 (unmodulated).
+        apply_recovery   : if False, skip the in-place capacity recovery step.
+                           Set False inside Gauss-Seidel inner loops so recovery
+                           is applied exactly once after convergence, not k times.
 
         Returns
         -------
@@ -434,13 +449,16 @@ class DynamicIOModel:
         x_actual = np.minimum(x_target * ratio, x_baseline * capacity)
         shortage = np.maximum(0.0, x_target - x_actual)
 
-        # Capital-intensity-weighted capacity recovery (CGE price modulated)
-        B_diag = np.diag(self.B)
-        mult   = cap_recovery_mult if cap_recovery_mult is not None else np.ones(n)
-        for i in range(n):
-            if capacity[i] < 1.0:
-                base_rate   = 0.04 / (1.0 + 5.0 * B_diag[i])
-                capacity[i] = min(1.0, capacity[i] + base_rate * float(mult[i]))
+        # Capital-intensity-weighted capacity recovery (CGE price modulated).
+        # Skipped when apply_recovery=False so the Gauss-Seidel inner loop can
+        # call io_step multiple times without accumulating spurious recovery.
+        if apply_recovery:
+            B_diag = np.diag(self.B)
+            mult   = cap_recovery_mult if cap_recovery_mult is not None else np.ones(n)
+            for i in range(n):
+                if capacity[i] < 1.0:
+                    base_rate   = 0.04 / (1.0 + 5.0 * B_diag[i])
+                    capacity[i] = min(1.0, capacity[i] + base_rate * float(mult[i]))
 
         supply_fractions = np.clip(x_actual / (x_baseline + 1e-12), 0.0, 1.0)
         return x_actual, shortage, supply_fractions

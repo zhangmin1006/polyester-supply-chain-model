@@ -2,34 +2,56 @@
 cge_model.py
 Computable General Equilibrium model for the polyester textile supply chain.
 
-Structure:
-  - CES (Constant Elasticity of Substitution) production at each sector
-  - Armington aggregation: domestic vs. imported goods
-  - Market clearing via tatonnement (iterative price adjustment)
-  - Calibrated to 2023 HMRC import data and UK industry turnover
+Structure (industry-focused CGE):
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Nested CES production (Leontief top-nest / Cobb-Douglas VA)     │
+  │    Output_j = min(Intermediate bundle_j , VA_j / v_j)            │
+  │    VA_j = A_j · L_j^α_j · K_j^(1-α_j)   [Cobb-Douglas]         │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Armington import aggregation (Hertel et al. GTAP v10)           │
+  │    Q_c = δ_c · (P_agg / P_c)^σ · Q_total                        │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Factor markets (short-run specific capital)                     │
+  │    Labour: L_j / L_j^0 = sf_j · (P_VA_j / P_VA_j^0)           │
+  │    Capital: sector-specific, rental rate = (1-α_j)·P_VA_j·X_j   │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Mini-SAM calibration (ONS IOT 2023 + GTAP v10 factor shares)   │
+  │    Rows: sectors, Labour, Capital, Household, ROW                │
+  │    Columns: sectors, factors, Household, ROW                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Welfare: Equivalent Variation decomposed into                   │
+  │    (a) UK consumer price effect (CES expenditure function)       │
+  │    (b) UK factor income change (Wholesale + Retail)              │
+  │    (c) Global supply-chain factor income change (all 8 stages)   │
+  └──────────────────────────────────────────────────────────────────┘
 
-Key equations:
-  CES production:  Q = A * [Σ_s δ_s * q_s^((σ-1)/σ)]^(σ/(σ-1))
-  Armington:       Q_c = (α * Q_dom^ρ + (1-α) * Q_imp^ρ)^(1/ρ), ρ=(σ-1)/σ
-  Market clearing: Σ demands = Σ supplies at equilibrium price vector P*
-  Price adjustment: ΔP/P = λ * (D - S) / S
+  Market clearing via tatonnement warm-started from previous period.
+  Price propagation uses full A-matrix cost push each iteration.
+
+Data sources:
+  Base quantities  : ONS Industry Accounts 2023 + HMRC OTS 2023
+  IO coefficients  : ONS Supply-Use Tables 2023 (C13, C14, C20B, G46)
+  GVA/Output ratios: ONS IO Analytical Tables 2023
+  Labour shares    : GTAP v10 factor database + ONS ABS 2023
+  Armington σ      : GTAP v10 (Hertel et al. 2012)
+  Freight shares   : UNCTAD Review of Maritime Transport 2023
 """
 
 import numpy as np
-from scipy.optimize import fsolve, minimize
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from real_data import (
     SECTORS, N_SECTORS, STAGE_GEOGRAPHY, ARMINGTON_ELASTICITY,
     UK_IMPORTS_TOTAL_GBP, UK_IMPORTS_BY_COUNTRY, UK_INDUSTRY,
     CHINA_PTA_GLOBAL_SHARE, EFFECTIVE_CHINA_DEPENDENCY,
-    SAFETY_STOCK_WEEKS,
+    SAFETY_STOCK_WEEKS, GVA_RATE, LABOUR_SHARE_IN_VA, VA_ELASTICITY,
 )
 
 # ── Freight cost share of each sector's total input cost ─────────────────────
 # Fraction of output price attributable to transport/logistics costs.
 # Sourced from: UNCTAD Review of Maritime Transport 2023 (garment 6-8% of FOB),
 # World Bank logistics cost estimates, ICIS industry cost breakdowns.
+# Used in Step 2b: UK_Wholesale price rise propagates to downstream sectors.
 FREIGHT_COST_SHARE = {
     "Oil_Extraction":     0.010,  # pipeline / tanker, low unit cost
     "Chemical_Processing": 0.020,
@@ -39,6 +61,31 @@ FREIGHT_COST_SHARE = {
     "Garment_Assembly":   0.075,  # sea freight from Asia dominates (UNCTAD 6-8% FOB)
     "UK_Wholesale":       0.200,  # logistics IS the product
     "UK_Retail":          0.030,  # last-mile delivery
+}
+
+# ── International sea freight share ──────────────────────────────────────────
+# Fraction of output price attributable specifically to INTERNATIONAL SEA
+# freight costs.  Used by the freight_multiplier parameter (which represents
+# global shipping rate indices such as Drewry WCI / Freightos FBX).
+#
+# This is deliberately separate from FREIGHT_COST_SHARE:
+#   • FREIGHT_COST_SHARE covers ALL logistics (domestic + international).
+#   • SEA_FREIGHT_SHARE covers only international ocean freight.
+#
+# Key difference: UK_Wholesale sector's VALUE-ADD is logistics, so total
+# logistics = 20% of costs (FREIGHT_COST_SHARE). But sea freight (the Drewry
+# WCI) is only ~3% of wholesale operating costs — the rest is domestic road
+# haulage, warehousing, and last-mile. Using 0.20 with the Drewry WCI inflates
+# wholesale costs by a factor the sector does not actually face from spot rates.
+SEA_FREIGHT_SHARE = {
+    "Oil_Extraction":      0.005,  # tanker, but mostly pipeline
+    "Chemical_Processing": 0.015,
+    "PTA_Production":      0.020,
+    "PET_Resin_Yarn":      0.030,
+    "Fabric_Weaving":      0.045,
+    "Garment_Assembly":    0.075,  # sea freight 6-8% of garment FOB (UNCTAD)
+    "UK_Wholesale":        0.030,  # sea freight ~3% of UK wholesale opex
+    "UK_Retail":           0.010,  # last-mile is domestic; sea freight minimal
 }
 
 
@@ -108,11 +155,30 @@ class CGEModel:
         self.P0 = P0.copy()
         self.Q0 = Q0.copy()
 
+        # ── Factor-market parameters ──────────────────────────────────────────
+        # α_L : labour share in value-added (Cobb-Douglas exponent)
+        # σ_VA: capital-labour substitution elasticity
+        # gva_rate for SAM: derived from A matrix column sums to ensure the
+        #   CGE production accounts are internally consistent with IO coefficients.
+        #   gva_j = 1 - Σ_i A[i,j]  (total intermediate cost share in A).
+        #   ONS GVA_RATE values are retained for reference but NOT used in the
+        #   SAM, because A captures global production technology while ONS GVA
+        #   covers UK domestic accounts — mixing them creates an imbalanced SAM.
+        from io_model import A_BASE as _A_FOR_GVA
+        _col_sums = _A_FOR_GVA.sum(axis=0)
+        self.alpha_L  = np.array([LABOUR_SHARE_IN_VA[s] for s in SECTORS])
+        self.sigma_va = np.array([VA_ELASTICITY[s]       for s in SECTORS])
+        self.gva_rate = np.maximum(1.0 - _col_sums, 0.05)   # A-matrix-implied GVA
+        self._gva_rate_ons = np.array([GVA_RATE[s] for s in SECTORS])  # reference only
+
         # Supplier shares calibrated from real data
         self._build_supplier_shares()
 
         # Calibrate CES share parameters (δ) from base-year data
         self._calibrate_ces_shares()
+
+        # Build balanced mini-SAM
+        self._calibrate_sam()
 
     # ── Calibration ───────────────────────────────────────────────────────────
 
@@ -138,6 +204,258 @@ class CGEModel:
             shares = np.array([geo[c] for c in countries])
             # δ_s ∝ share_s * P0_s^(1-σ) at baseline P=1, so δ_s = share_s
             self.delta.append(dict(zip(countries, shares / shares.sum())))
+
+    # ── SAM calibration ───────────────────────────────────────────────────────
+
+    def _calibrate_sam(self):
+        """
+        Build a balanced mini-SAM from base-year data.
+
+        Accounts (rows = receipts, columns = payments):
+          Sectors (8)   — production accounts
+          Labour        — wage bill per sector
+          Capital       — capital returns per sector
+          Household     — receives factor income, spends on final demand
+          ROW residual  — other intermediate inputs not in the polyester chain
+
+        Column balance per sector j:
+          Σ_i F[i,j]  +  ROW_j  +  VA_j  =  X_j
+        where:
+          F[i,j]  = A_BASE[i,j] * X_j          (polyester chain intermediate inputs)
+          VA_j    = (1 - col_sum(A)_j) * X_j    (A-matrix-implied GVA, for consistency)
+          ROW_j   = 0  (VA absorbs the full residual by construction)
+
+        Row balance per sector j:
+          Σ_k F[j,k]  +  FD_j  =  X_j
+        where FD_j = X_j - Σ_k A_BASE[j,k]*X_k  (residual final demand)
+        """
+        from io_model import A_BASE
+        n  = N_SECTORS
+        X0 = Q0_GBP.copy()
+
+        # Intermediate flow matrix: F[i,j] = input i consumed by sector j
+        F = A_BASE * X0[np.newaxis, :]   # (n, n)
+
+        # Value-added components
+        VA  = self.gva_rate * X0                     # total GVA per sector
+        WL  = self.alpha_L  * VA                     # labour income
+        RK  = (1.0 - self.alpha_L) * VA              # capital income
+
+        # Residual "other intermediate inputs" to balance each column
+        col_sum = A_BASE.sum(axis=0)                  # polyester-chain input share
+        ROW_col = np.maximum(0.0,
+                             (1.0 - col_sum - self.gva_rate) * X0)
+
+        # Final demand: what each sector sells outside the intermediate chain
+        row_sum_F = (A_BASE * X0[np.newaxis, :]).sum(axis=1)  # Σ_k F[j,k]
+        FD  = np.maximum(0.0, X0 - row_sum_F)        # residual final sales
+
+        # Household income = all factor payments in the chain
+        HH_income = WL.sum() + RK.sum()
+        # Household expenditure = final demand (primarily retail)
+        HH_expend = FD.sum()
+
+        self._sam_X0      = X0
+        self._sam_F       = F
+        self._sam_VA      = VA
+        self._sam_WL      = WL
+        self._sam_RK      = RK
+        self._sam_ROW_col = ROW_col
+        self._sam_FD      = FD
+        self._sam_HH_income = HH_income
+        self._sam_HH_expend = HH_expend
+
+        # Implied VA rate from A matrix (used as P_VA baseline, all prices = 1)
+        self._pva0 = np.maximum(1.0 - col_sum, 0.01)   # (n,)
+
+    def build_sam(self) -> pd.DataFrame:
+        """
+        Return the mini-SAM as a formatted DataFrame (£bn, base year 2023).
+
+        Rows    : supply-side accounts (sectors + factor aggregates)
+        Columns : demand-side accounts (sectors + final demand aggregates)
+        """
+        n   = N_SECTORS
+        X0  = self._sam_X0 / 1e9
+        F   = self._sam_F  / 1e9
+        WL  = self._sam_WL / 1e9
+        RK  = self._sam_RK / 1e9
+        FD  = self._sam_FD / 1e9
+        ROW = self._sam_ROW_col / 1e9
+
+        short = [s.replace("_", " ").replace("UK ", "") for s in SECTORS]
+
+        # Build (n+4) × (n+4) SAM
+        dim   = n + 4   # sectors + Labour + Capital + Household + Total
+        labels = short + ["Labour", "Capital", "Household", "TOTAL"]
+        sam   = np.zeros((dim, dim))
+
+        # Intermediate flows
+        sam[:n, :n] = F
+
+        # Labour and Capital rows → sector columns (factor payments)
+        sam[n,   :n] = WL
+        sam[n+1, :n] = RK
+
+        # Residual other-intermediate row → sector columns
+        # (ROW_col added as a special "Other inputs" row; shown in total only)
+
+        # Household column: final demand
+        sam[:n, n+2] = FD
+
+        # Household row: receives factor income (from Labour + Capital rows)
+        sam[n+2, n]   = WL.sum()    # Labour account → Household
+        sam[n+2, n+1] = RK.sum()    # Capital account → Household
+
+        # Totals column / row
+        sam[:n,   n+3] = X0               # sector row totals = gross output
+        sam[n,    n+3] = WL.sum()
+        sam[n+1,  n+3] = RK.sum()
+        sam[n+2,  n+3] = WL.sum() + RK.sum()
+
+        sam[n+3, :n]   = X0               # sector column totals = gross output
+        sam[n+3, n]    = WL.sum()
+        sam[n+3, n+1]  = RK.sum()
+        sam[n+3, n+2]  = FD.sum()
+
+        df = pd.DataFrame(sam, index=labels, columns=labels)
+        return df.round(3)
+
+    # ── Factor-market methods ─────────────────────────────────────────────────
+
+    def _va_prices(self, prices: np.ndarray, A: np.ndarray) -> np.ndarray:
+        """
+        Value-added price index per sector: P_VA_j = P_j − Σ_i a_ij · P_i.
+
+        Represents the residual price after paying for intermediate inputs.
+        At baseline (all P=1): P_VA_j^0 = 1 − col_sum_j = self._pva0[j].
+        When supply is disrupted: P_VA may rise (scarcity rent) or fall
+        (input cost squeeze).
+        """
+        int_cost = A.T @ prices           # (n,): Σ_i a_ij * P_i per sector j
+        return np.maximum(prices - int_cost, 0.01)
+
+    def factor_incomes(self, prices: np.ndarray,
+                       supply_fractions: np.ndarray,
+                       A: Optional[np.ndarray] = None) -> Dict:
+        """
+        Compute endogenous factor incomes and employment from equilibrium prices.
+
+        Production structure (short-run specific capital):
+          Output_j    = sf_j · X_j^0                  [supply-constrained]
+          P_VA_j      = P_j − Σ_i a_ij · P_i          [value-added price]
+          WageBill_j  = α_j · P_VA_j · X_j            [Shephard's lemma, CD]
+          CapReturn_j = (1−α_j) · P_VA_j · X_j
+          Employ_j    = sf_j · (P_VA_j / P_VA_j^0)    [sticky wages, Shephard]
+
+        Employment index interpretation:
+          > 1 : sector over-employed relative to baseline (price surge + output)
+          < 1 : job losses due to supply shock
+          Dampened by price rise: when VA price rises despite output falling,
+          firms retain more labour (higher marginal revenue product).
+
+        UK-specific flag: Wholesale (idx 6) and Retail (idx 7) are UK-domestic
+        stages. Their factor income changes directly affect UK households.
+        """
+        from io_model import A_BASE
+        A_use = A if A is not None else A_BASE
+
+        n   = self.n
+        sf  = np.asarray(supply_fractions, dtype=float)
+        p   = np.asarray(prices, dtype=float)
+        X0  = self._sam_X0
+        X   = sf * X0
+
+        pva   = self._va_prices(p, A_use)           # current VA prices
+        pva0  = self._pva0                           # baseline VA prices (all P=1)
+
+        # Wage bill and capital return at current prices
+        wl  = self.alpha_L          * pva * X       # (n,)
+        rk  = (1.0 - self.alpha_L)  * pva * X       # (n,)
+
+        # Employment index: sticky wages, labour adjusts to equate MVPs
+        # L_j/L_j^0 = sf_j · (P_VA_j / P_VA_j^0)
+        employ = np.clip(sf * (pva / pva0), 0.0, 2.0)
+
+        # Separate UK stages from global upstream stages
+        uk_idx = [SECTORS.index("UK_Wholesale"), SECTORS.index("UK_Retail")]
+
+        return {
+            "wage_bill_gbp":       wl,
+            "capital_return_gbp":  rk,
+            "employment_index":    employ,
+            "va_price_index":      pva / pva0,
+            "delta_wage_bill_gbp":      wl - self._sam_WL,
+            "delta_capital_return_gbp": rk - self._sam_RK,
+            # UK-specific (wholesale + retail workers and capital)
+            "uk_delta_factor_income_gbp": (
+                (wl[uk_idx] - self._sam_WL[uk_idx]).sum() +
+                (rk[uk_idx] - self._sam_RK[uk_idx]).sum()
+            ),
+            # Full supply-chain global factor income change
+            "global_delta_factor_income_gbp": (
+                (wl - self._sam_WL).sum() + (rk - self._sam_RK).sum()
+            ),
+        }
+
+    def equivalent_variation(self, prices: np.ndarray,
+                              supply_fractions: np.ndarray,
+                              A: Optional[np.ndarray] = None) -> Dict:
+        """
+        Equivalent Variation welfare decomposition.
+
+        EV_total = UK_factor_income_change − consumer_price_loss
+
+        Consumer price loss uses the CES expenditure function:
+          EV_consumer = Y_retail · [(P_retail/P0_retail)^(1−1/σ) − 1] / (1−1/σ)
+
+        For σ → 1 (Cobb-Douglas limit):
+          EV_consumer = −Y_retail · ln(P_retail)
+
+        This replaces the previous first-order approximation −ΔP · Q0
+        which overestimates welfare loss when σ > 1.
+
+        Returns
+        -------
+        dict with ev_gbp, consumer_loss_gbp, uk_factor_gain_gbp,
+                  global_factor_gain_gbp, ev_breakdown (Series)
+        """
+        fi   = self.factor_incomes(prices, supply_fractions, A)
+        p    = np.asarray(prices, dtype=float)
+
+        # Consumer welfare: final demand is concentrated at UK_Retail
+        ret_idx = SECTORS.index("UK_Retail")
+        sigma_r = self.sigma[SECTORS[ret_idx]]
+        p_r     = float(p[ret_idx])
+        Y_r     = float(self._sam_FD[ret_idx])   # base household final expenditure
+
+        if abs(sigma_r - 1.0) < 1e-4:            # Cobb-Douglas limit
+            consumer_loss = Y_r * np.log(max(p_r, 1e-6))
+        else:
+            consumer_loss = Y_r * (p_r ** (1.0 - 1.0/sigma_r) - 1.0) / (1.0 - 1.0/sigma_r)
+
+        uk_factor_gain     = fi["uk_delta_factor_income_gbp"]
+        global_factor_gain = fi["global_delta_factor_income_gbp"]
+        ev_uk              = uk_factor_gain - consumer_loss
+        ev_global          = global_factor_gain - consumer_loss
+
+        rows = {
+            "Consumer price loss (UK)":           -consumer_loss,
+            "UK factor income change":             uk_factor_gain,
+            "EV (UK net welfare)":                 ev_uk,
+            "Global supply-chain factor change":   global_factor_gain,
+            "EV (global chain welfare)":           ev_global,
+        }
+
+        return {
+            "ev_gbp":               ev_uk,
+            "ev_global_gbp":        ev_global,
+            "consumer_loss_gbp":    consumer_loss,
+            "uk_factor_gain_gbp":   uk_factor_gain,
+            "global_factor_gain_gbp": global_factor_gain,
+            "ev_breakdown":         pd.Series(rows),
+            "factor_incomes":       fi,
+        }
 
     # ── CES demand functions ───────────────────────────────────────────────────
 
@@ -195,7 +513,9 @@ class CGEModel:
                     tol: float = 1e-7,
                     lambda_: float = 0.08,
                     demand_shocks: Optional[np.ndarray] = None,
-                    shock_duration_weeks: int = 12) -> Dict:
+                    shock_duration_weeks: int = 12,
+                    freight_multiplier: float = 1.0,
+                    commodity_prices: Optional[Dict[str, float]] = None) -> Dict:
         """
         Find general equilibrium prices and quantities.
 
@@ -216,6 +536,19 @@ class CGEModel:
             their freight cost share (FREIGHT_COST_SHARE).
             ΔP_j += freight_share_j × (P_logistics - 1)
 
+        Step 2c — Exogenous freight-rate multiplier (Issues 1/V2/V5):
+            When global freight rates surge independently of the wholesale
+            capacity (e.g. Drewry WCI +563%), inject cost-push directly:
+            ΔP_j += freight_share_j × (freight_multiplier - 1)
+            This captures cost-push that cannot be avoided by sourcing
+            substitution — it raises costs at ALL import-using sectors.
+
+        Step 2d — Exogenous commodity price floor (Issues 2/V4/V7):
+            commodity_prices = {sector_name: price_multiplier} sets a
+            minimum price at a sector (e.g. oil at 1.54 after Brent +54%).
+            Applied before A-matrix propagation so downstream cost-push
+            reflects the commodity price shock correctly.
+
         Step 3 — Tatonnement refinement with demand shocks:
             Demand shocks (e.g. COVID retail lockdown) scale Q0 downward.
             When demand_shocks[j] < 1: demand collapses → price falls.
@@ -229,6 +562,12 @@ class CGEModel:
         demand_shocks       : (n,) optional multiplier on demand (1=baseline,
                               <1=demand collapse, >1=demand surge)
         shock_duration_weeks: expected duration of the shock (for buffer calc)
+        freight_multiplier  : global freight cost index relative to baseline
+                              (1.0=normal; 5.63=Drewry WCI Sep 2021 peak).
+                              Injects cost-push at every import-intensive sector.
+        commodity_prices    : {sector_name: price_multiplier} — sets a floor on
+                              sector price before A-matrix propagation.  Use for
+                              oil/energy price shocks (e.g. Brent +54% → {"Oil": 1.54}).
 
         Returns
         -------
@@ -239,6 +578,15 @@ class CGEModel:
         if demand_shocks is None:
             demand_shocks = np.ones(self.n)
         demand_shocks = np.asarray(demand_shocks, dtype=float)
+
+        # ── Step 2d: commodity price floors (before partial equilibrium) ─────
+        # Apply these before the Armington step so the oil/energy price is
+        # already "priced in" when Step 2 propagates costs downstream.
+        commodity_floor = np.ones(self.n)
+        if commodity_prices:
+            for s_name, price_mult in commodity_prices.items():
+                if s_name in SECTORS:
+                    commodity_floor[SECTORS.index(s_name)] = float(price_mult)
 
         # ── Step 1: partial equilibrium + inventory buffer damping ────────────
         P_partial = np.ones(self.n)
@@ -273,16 +621,20 @@ class CGEModel:
                     P_partial[j] = P_raw
             # else no shock → P_partial[j] = 1.0
 
-        # ── Step 2: upstream I-O cost propagation ─────────────────────────────
+        # Apply commodity price floors before A-matrix propagation
+        P_partial = np.maximum(P_partial, commodity_floor)
+
+        # ── Step 2: upstream I-O cost propagation (full A matrix) ────────────
+        # Use vectorised column dot-product: cost_push_j = A[:,j] · (P-1)
+        # A is lower-triangular for this supply chain, so sequential order
+        # gives the correct upstream-first propagation.
         P_propagated = P_partial.copy()
         for j in range(1, self.n):
-            cost_push = sum(A_BASE[i, j] * (P_partial[i] - 1.0)
-                            for i in range(j))
+            cost_push = float(A_BASE[:j, j] @ (P_partial[:j] - 1.0))
             P_propagated[j] = max(P_partial[j], 1.0 + cost_push)
 
-        # ── Step 2b: freight cost pass-through ────────────────────────────────
-        # Logistics (UK_Wholesale, idx=6) price rise feeds into all sectors
-        # via their freight cost share.
+        # ── Step 2b: freight cost pass-through from logistics price ──────────
+        # UK_Wholesale price rise (from capacity shock) feeds into all sectors.
         logistics_idx = SECTORS.index("UK_Wholesale")
         P_logistics   = P_propagated[logistics_idx]
         if P_logistics > 1.0:
@@ -293,7 +645,34 @@ class CGEModel:
                 freight_push = fshare * (P_logistics - 1.0)
                 P_propagated[j] = min(P_propagated[j] + freight_push, 8.0)
 
+        # ── Step 2c: exogenous freight-rate multiplier ────────────────────────
+        # Global freight rate surge (e.g. Drewry WCI +563%) raises costs at
+        # every import-intensive sector regardless of wholesale capacity.
+        # This captures cost-push from rising spot market freight rates.
+        if freight_multiplier > 1.0:
+            for j in range(self.n):
+                fshare = SEA_FREIGHT_SHARE.get(SECTORS[j], 0.02)
+                exog_push = fshare * (freight_multiplier - 1.0)
+                P_propagated[j] = min(P_propagated[j] + exog_push, 8.0)
+
         # ── Step 3: tatonnement with demand shocks ─────────────────────────────
+        # Pre-compute constant price floors: prices cannot fall below the cost
+        # imposed by freight rates or commodity price shocks.
+        # Uses SEA_FREIGHT_SHARE (not FREIGHT_COST_SHARE) because freight_multiplier
+        # represents global shipping rate indices (Drewry WCI / Freightos) which
+        # apply only to the sea freight component of costs, not total logistics.
+        #
+        # IMPORTANT: freight push is applied as a FLOOR (np.maximum), not added on
+        # each iteration. Adding it each iteration would cause price accumulation
+        # and non-convergence. The floor correctly models a minimum cost at which
+        # producers will supply (i.e., the supply curve shifts up by freight cost).
+        freight_push_vec = np.zeros(self.n)
+        if freight_multiplier > 1.0:
+            for j in range(self.n):
+                freight_push_vec[j] = SEA_FREIGHT_SHARE.get(SECTORS[j], 0.02) * (freight_multiplier - 1.0)
+        # Combined floor: max of (1 + freight_push, commodity_floor)
+        price_floor = np.maximum(1.0 + freight_push_vec, commodity_floor)
+
         P = P_propagated.copy()
         history = [P.copy()]
         converged = False
@@ -310,6 +689,9 @@ class CGEModel:
 
             P_new = P * (1 + lambda_ * ED / (self.Q0 + 1e-12))
             P_new = np.clip(P_new, 0.3, 8.0)
+            # Enforce exogenous cost floors: tatonnement cannot push prices below
+            # the minimum implied by freight costs or commodity price shocks.
+            P_new = np.maximum(P_new, price_floor)
 
             history.append(P_new.copy())
             if np.max(np.abs(P_new - P)) < tol:
@@ -352,6 +734,8 @@ class CGEModel:
                    max_iter: int = 40,
                    lambda_: float = 0.08,
                    A: np.ndarray = None,
+                   freight_multiplier: float = 1.0,
+                   commodity_prices: Optional[Dict[str, float]] = None,
                    ) -> np.ndarray:
         """
         Lightweight per-period price update for the coupled IO × CGE × ABM loop.
@@ -376,7 +760,21 @@ class CGEModel:
         from io_model import A_BASE
         A_use = A if A is not None else A_BASE
 
-        P = prev_prices.copy()
+        # Pre-compute commodity floors and freight push vectors (constant per call)
+        commodity_floor = np.ones(self.n)
+        if commodity_prices:
+            for s_name, pm in commodity_prices.items():
+                if s_name in SECTORS:
+                    commodity_floor[SECTORS.index(s_name)] = float(pm)
+
+        freight_push_vec = np.zeros(self.n)
+        if freight_multiplier > 1.0:
+            for j in range(self.n):
+                freight_push_vec[j] = SEA_FREIGHT_SHARE.get(SECTORS[j], 0.02) * (freight_multiplier - 1.0)
+        # Combined constant floor: freight cost + commodity price floors
+        price_floor = np.maximum(1.0 + freight_push_vec, commodity_floor)
+
+        P = np.maximum(prev_prices.copy(), price_floor)
 
         for _ in range(max_iter):
             ED = np.zeros(self.n)
@@ -394,6 +792,10 @@ class CGEModel:
                 cost_push = sum(A_use[i, j] * (P_new[i] - 1.0) for i in range(j))
                 P_new[j]  = max(P_new[j], 1.0 + cost_push)
 
+            # Enforce exogenous cost floors (freight + commodity): prices cannot
+            # fall below the minimum implied cost level. Applied as np.maximum
+            # (not addition) so the floor does not accumulate across iterations.
+            P_new = np.maximum(P_new, price_floor)
             P_new = np.clip(P_new, 0.3, 4.0)
             if np.max(np.abs(P_new - P)) < 1e-6:
                 break

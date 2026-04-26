@@ -26,7 +26,13 @@ SECTORS = [
 N_SECTORS = len(SECTORS)
 
 # ── UK 2023 Synthetic Apparel Imports — HMRC data ────────────────────────────
-UK_IMPORTS_TOTAL_GBP = 2_388_954_178
+# HMRC OTS API total (2023, HS61+62 synthetic apparel, all countries).
+# This is the authoritative figure from the API download (2026-04-17).
+# A separate xlsx snapshot gives £2,388,954,178 — the £3.9m gap (0.16%) is a
+# provisional-to-final revision by HMRC between download dates.  The API value
+# below is used as the denominator for all share calculations.
+UK_IMPORTS_TOTAL_GBP = 2_392_841_303   # HMRC OTS API 2023 (authoritative)
+UK_IMPORTS_TOTAL_GBP_XLSX = 2_388_954_178   # xlsx snapshot (retained for reference)
 
 # IMPORTANT: The HMRC raw download has both an "EU" aggregate row AND individual
 # EU-member rows (Italy, Netherlands, Spain, France, Belgium, Germany, Romania).
@@ -37,7 +43,10 @@ UK_IMPORTS_TOTAL_GBP = 2_388_954_178
 UK_IMPORTS_EU_TOTAL_GBP = 586_526_782   # total EU block (HMRC HS61+62 2023)
 
 UK_IMPORTS_BY_COUNTRY = {
-    "China":        {"value_gbp": 651_373_563,  "share": 0.27266},
+    # value_gbp from HMRC OTS API (2023); share = value / UK_IMPORTS_TOTAL_GBP.
+    # China API value (653,175,775) differs from xlsx (651,373,563) by £1.8m —
+    # same provisional-revision gap; API value used for the share denominator.
+    "China":        {"value_gbp": 653_175_775,  "share": 0.27298},
     "Bangladesh":   {"value_gbp": 287_422_073,  "share": 0.12031},
     "Turkey":       {"value_gbp": 143_694_104,  "share": 0.06015},
     "Vietnam":      {"value_gbp": 117_735_860,  "share": 0.04928},
@@ -220,15 +229,29 @@ ASOS_SUPPLIERS = {
 #     Wholesale(G46): GVA £113,354m/ Output £214,742m= 0.528
 #     Retail(G47):    GVA £104,392m/ Output £174,593m= 0.598
 # Backward chain: vs[j] = vs[j+1] × (1 - GVA_rate[j+1])
+# Backward chain: vs[j] = vs[child] × (1 − GVA_rate[child])
+# anchored at UK_Retail = 1.0 and propagated upstream one stage at a time.
+#
+#   UK_Retail           = 1.000  (anchor)
+#   UK_Wholesale        = 1.000 × (1 − 0.598) = 0.402
+#   Garment_Assembly    = 0.402 × (1 − 0.528) = 0.190
+#   Fabric_Weaving      = 0.190 × (1 − 0.552) = 0.085
+#   PET_Resin_Yarn      = 0.085 × (1 − 0.478) = 0.044
+#   PTA_Production      = 0.044 × (1 − 0.210) = 0.035
+#   Chemical_Processing = 0.035 × (1 − 0.190) = 0.028   ← corrected (was 0.031)
+#   Oil_Extraction      = 0.028 × (1 − 0.223) = 0.022   ← corrected (was 0.010, 2× error)
+#
+# Previous errors: Chemical used GVA_rate of C19 refining (0.082) instead of
+# PTA (0.190); Oil used Chemical as parent instead of PTA, compounding the error.
 STAGE_RETAIL_VALUE_SHARE = {
-    "Oil_Extraction":      0.010,   # 0.031 × (1 − 0.684) — ONS IOT 2023
-    "Chemical_Processing": 0.031,   # 0.034 × (1 − 0.082) — ONS IOT 2023
-    "PTA_Production":      0.034,   # 0.044 × (1 − 0.223) — ONS IOT 2023
-    "PET_Resin_Yarn":      0.044,   # 0.085 × (1 − 0.478) — ONS IOT 2023
-    "Fabric_Weaving":      0.085,   # 0.190 × (1 − 0.552) — ONS IOT 2023
-    "Garment_Assembly":    0.190,   # 0.402 × (1 − 0.528) — ONS IOT 2023
-    "UK_Wholesale":        0.402,   # 1.000 × (1 − 0.598) — ONS IOT 2023
-    "UK_Retail":           1.000,   # anchor — ONS IOT 2023
+    "Oil_Extraction":      0.022,   # 0.028 × (1 − 0.223) — corrected
+    "Chemical_Processing": 0.028,   # 0.035 × (1 − 0.190) — corrected
+    "PTA_Production":      0.035,   # 0.044 × (1 − 0.210)
+    "PET_Resin_Yarn":      0.044,   # 0.085 × (1 − 0.478)
+    "Fabric_Weaving":      0.085,   # 0.190 × (1 − 0.552)
+    "Garment_Assembly":    0.190,   # 0.402 × (1 − 0.528)
+    "UK_Wholesale":        0.402,   # 1.000 × (1 − 0.598)
+    "UK_Retail":           1.000,   # anchor
 }
 
 # ── Nylon producers (for cross-industry resilience analysis) ──────────────────
@@ -244,19 +267,150 @@ COTTON_PRODUCTION = {
     "China": 0.225, "India": 0.225, "USA": 0.147, "Other": 0.403,
 }
 
-# ── Derived: effective China dependency at each stage ─────────────────────────
-# Accounts for the fact that Turkey/Bangladesh/Vietnam all source fabric from China
-# i.e., the apparent supplier diversity collapses upstream.
-# Source: Textile Industrial Supply Chain pptx ("Key Points" slide)
-EFFECTIVE_CHINA_DEPENDENCY = {
-    "Oil_Extraction":     0.05,   # oil supply is diversified
-    "Chemical_Processing": 0.47,  # China domestic + imports from SA/SK/JP that ultimately serve China
-    "PTA_Production":     0.67,   # updated: GlobalData 2021 capacity survey
-    "PET_Resin_Yarn":     0.60,   # updated: CIRFS 2023 polyester fibre production
-    "Fabric_Weaving":     0.433,  # updated: WTO 2024 textile export share
-    "Garment_Assembly":   0.60,   # HMRC 2023 direct (27.3%) + upstream tracing (~60% effective)
-    "UK_Wholesale":       0.00,
-    "UK_Retail":          0.00,
+# ── Effective China dependency: upstream-tracing calculation ──────────────────
+def compute_effective_china_dependency() -> dict:
+    """
+    Two-tier upstream supply-origin tracing of China's effective share.
+
+    Tier 1 (direct): China's share in STAGE_GEOGRAPHY at each stage.
+    Tier 2 (indirect): For each non-China supplier s at stage j,
+        add  share_s × china_share_at_upstream_stage(j)
+        where upstream_stage(j) is the immediate input stage for j.
+
+    Upstream linkages used for tier-2:
+        Garment      ← Fabric        (fabric is the primary material input)
+        Fabric       ← PET/Yarn      (polyester fibre is ~55% of fabric cost)
+        PET/Yarn     ← PTA           (PTA is ~55% of PET cost)
+        PTA          ← Chemical      (p-Xylene/MEG ~94% of PTA cost)
+        Chemical     ← Oil           (naphtha feedstock ~20% of chem cost)
+
+    Oil has no modelled upstream, so only tier-1 applies there.
+    Wholesale and Retail are domestic services — no upstream tracing needed.
+
+    The formula for tier-2 at stage j with upstream stage u:
+        eff_j = china_j_direct + (1 - china_j_direct) × china_u_direct
+    This is a first-order approximation; in practice second-order effects
+    are small and within data uncertainty.
+    """
+    upstream_of = {
+        "Garment_Assembly":    "Fabric_Weaving",
+        "Fabric_Weaving":      "PET_Resin_Yarn",
+        "PET_Resin_Yarn":      "PTA_Production",
+        "PTA_Production":      "Chemical_Processing",
+        "Chemical_Processing": "Oil_Extraction",
+    }
+
+    # Direct China share (tier-1)
+    direct = {}
+    for s, geo in STAGE_GEOGRAPHY.items():
+        china_keys = [k for k in geo if "China" in k]
+        direct[s] = sum(geo[k] for k in china_keys)
+
+    # China's ~5% global crude oil share is bundled into the "Other" key
+    # in Oil_Extraction geography (EIA list groups it with Iran, Brazil etc.).
+    # Override with EIA estimate so Oil is not falsely zero.
+    CHINA_OIL_SHARE_APPROX = 0.050
+
+    result = {}
+    for s in SECTORS:
+        d = direct.get(s, 0.0)
+        if s == "Oil_Extraction":
+            # China's direct share not explicit in STAGE_GEOGRAPHY → use EIA estimate
+            result[s] = round(CHINA_OIL_SHARE_APPROX, 3)
+            continue
+        up = upstream_of.get(s)
+        if up is not None:
+            # Tier-2: non-China share × China's direct fraction at the upstream stage
+            # Use direct shares only (not recursive) to avoid compounding across
+            # multiple tiers beyond what the data supports.
+            china_up_direct = direct.get(up, 0.0)
+            if up == "Oil_Extraction":
+                china_up_direct = CHINA_OIL_SHARE_APPROX
+            result[s] = round(d + (1.0 - d) * china_up_direct, 3)
+        else:
+            result[s] = round(d, 3)
+
+    # Domestic services: zero upstream exposure
+    result["UK_Wholesale"] = 0.0
+    result["UK_Retail"]    = 0.0
+    return result
+
+
+# Pre-computed effective China dependency (call once at module load).
+#
+# Cross-check against research-document figure (Textile Industrial SC pptx):
+#   Garment: direct 27.3% + (72.7% × 43.3% Fabric) = 58.8%  ← pptx = 60% ✓
+#   Chemical: direct 35% + (65% × 5% Oil China) = 38.2%
+#             pptx reports 47% using demand-concentration tracing (fraction of
+#             global MEG/p-Xylene output consumed inside China-affiliate chains).
+#             Supply-origin figure = 38%.  Both are stored for transparency.
+#   PTA: direct 67% + (33% × 35% Chemical) = 78.5%
+#        The 33% non-China PTA producers depend partly on Chinese MEG/p-Xylene.
+#   PET: direct 60% + (40% × 67% PTA direct) = 86.8%
+#        Upper bound — assumes non-China PET uses global-average PTA mix.
+EFFECTIVE_CHINA_DEPENDENCY = compute_effective_china_dependency()
+
+# Research-document figure (Textile Industrial SC pptx) using demand-concentration
+# tracing for Chemical_Processing (47% = share of global MEG/p-Xylene going to
+# China-affiliated chains).  Retained as a separate reference constant.
+EFFECTIVE_CHINA_DEPENDENCY_PPTX = {
+    **EFFECTIVE_CHINA_DEPENDENCY,
+    "Chemical_Processing": 0.47,   # pptx demand-concentration figure
+}
+
+# ── GVA / Output ratios from ONS IO Analytical Tables 2023 ──────────────────
+# Gross Value Added divided by Gross Output at each supply chain stage.
+# Source: ONS UK Input-Output Analytical Tables 2023 (published 2025).
+#   Oil (CPA_B):       £25,313m / £37,016m = 0.684
+#   Petrochem (C20B):  £2,171m  / £9,738m  = 0.223
+#   Textiles (C13):    £3,514m  / £7,347m  = 0.478
+#   Apparel (C14):     £1,801m  / £3,266m  = 0.552
+#   Wholesale (G46):   £113,354m/ £214,742m= 0.528
+#   Retail (G47):      £104,392m/ £174,593m= 0.598
+# PTA and PET are sub-sectors of C20; rates interpolated from ICIS cost structures.
+GVA_RATE = {
+    "Oil_Extraction":      0.684,  # ONS CPA_B
+    "Chemical_Processing": 0.223,  # ONS C20B (petrochem)
+    "PTA_Production":      0.190,  # C20B adjusted: more capital/input-intensive
+    "PET_Resin_Yarn":      0.210,  # C20B adjusted: polymerisation margin
+    "Fabric_Weaving":      0.478,  # ONS C13
+    "Garment_Assembly":    0.552,  # ONS C14
+    "UK_Wholesale":        0.528,  # ONS G46
+    "UK_Retail":           0.598,  # ONS G47
+}
+
+# ── Labour share in value-added (α_L) ────────────────────────────────────────
+# Fraction of sectoral GVA paid as labour compensation (wages + employer NIC).
+# Primary source: GTAP v10 factor share database — Hertel et al. (2012).
+# Cross-checked against ONS Annual Business Survey 2023 (employee costs / GVA).
+#   GTAP "oil"  α_L ≈ 0.12   |  ONS CPA_B:  employee costs / GVA ≈ 0.11
+#   GTAP "crp"  α_L ≈ 0.26   |  ONS C20B:   employee costs / GVA ≈ 0.28
+#   GTAP "tex"  α_L ≈ 0.46   |  ONS C13:    employee costs / GVA ≈ 0.44
+#   GTAP "wap"  α_L ≈ 0.69   |  ONS C14:    employee costs / GVA ≈ 0.65
+#   GTAP "trd"  α_L ≈ 0.58   |  ONS G46/47: employee costs / GVA ≈ 0.55–0.62
+LABOUR_SHARE_IN_VA = {
+    "Oil_Extraction":      0.12,  # GTAP "oil";  ONS CPA_B ≈ 0.11
+    "Chemical_Processing": 0.26,  # GTAP "crp";  ONS C20B  ≈ 0.28
+    "PTA_Production":      0.22,  # GTAP "crp" adjusted: more automated
+    "PET_Resin_Yarn":      0.28,  # GTAP "crp" adjusted: slightly more labour
+    "Fabric_Weaving":      0.46,  # GTAP "tex";  ONS C13   ≈ 0.44
+    "Garment_Assembly":    0.69,  # GTAP "wap";  ONS C14   ≈ 0.65
+    "UK_Wholesale":        0.55,  # GTAP "trd";  ONS G46   ≈ 0.55
+    "UK_Retail":           0.62,  # GTAP "trd";  ONS G47   ≈ 0.62
+}
+
+# ── Capital-labour substitution elasticity in value-added (σ_VA) ──────────────
+# CES elasticity of substitution between labour and capital in the VA nest.
+# Source: GTAP v10 parameter database — Hertel et al. (2012).
+VA_ELASTICITY = {
+    "Oil_Extraction":      0.80,  # GTAP "oil"  — limited short-run substitution
+    "Chemical_Processing": 1.26,  # GTAP "crp"
+    "PTA_Production":      1.26,  # GTAP "crp"  — same technology class
+    "PET_Resin_Yarn":      1.26,  # GTAP "crp"
+    "Fabric_Weaving":      1.26,  # GTAP "tex"
+    "Garment_Assembly":    1.40,  # GTAP "wap"  — most flexible (labour-intensive)
+    "UK_Wholesale":        1.20,  # GTAP "trd" approx.
+    "UK_Retail":           1.20,  # GTAP "trd" approx.
 }
 
 # ── Armington substitution elasticities ──────────────────────────────────────
