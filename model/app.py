@@ -1,6 +1,6 @@
 """
 app.py
-Full integrated UI for the Polyester Textile Supply Chain Model.
+Full integrated UI for the UK Textile Supply Chain Analysis.
 
 Integrates all analysis and visualisation functions:
   IO × CGE × ABM × MRIO × Ghosh | HMRC 2002-2024 | 5 shock scenarios
@@ -52,7 +52,7 @@ DARK          = "plotly_dark"
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Polyester Supply Chain",
+    page_title="UK Textile Supply Chain Analysis",
     page_icon="🧵",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -95,8 +95,7 @@ def _baseline(_m):
 
 # ── Sidebar navigation ────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 🧵 Polyester Supply Chain")
-    st.caption("UK Import Risk | HMRC 2002-2024\nIO × CGE × ABM × MRIO × Ghosh")
+    st.markdown("### 🧵 UK Textile Supply Chain Analysis")
     st.divider()
 
     page = st.radio("", [
@@ -104,8 +103,6 @@ with st.sidebar:
         "📈 HMRC Market Data",
         "🗺️ Supply Chain Map",
         "📊 Baseline Analysis",
-        "🌍 MRIO Analysis",
-        "🔄 Ghosh Supply-Push",
         "⚡ Scenario Simulator",
         "📋 All Scenarios",
         "🏛️ Policy Analysis",
@@ -136,7 +133,7 @@ with st.sidebar:
 # HOME
 # ═══════════════════════════════════════════════════════════════════════════════
 if page == "🏠 Home":
-    st.title("Polyester Textile Supply Chain Model")
+    st.title("UK Textile Supply Chain Analysis")
     st.markdown("*UK synthetic apparel imports · 8-stage supply chain · 5 shock scenarios · HMRC 2002-2024*")
     st.divider()
 
@@ -198,11 +195,11 @@ if page == "🏠 Home":
     st.subheader("Quick Navigation")
     nav_items = [
         ("📈 HMRC Market Data",   "HMRC import trends 2002–2024"),
-        ("🌍 MRIO Analysis",      "8-region value-added decomposition"),
-        ("🔄 Ghosh Supply-Push",  "Forward linkage & supply shocks"),
+        ("📊 Baseline Analysis",  "HHI, China exposure, MRIO & Ghosh"),
         ("⚡ Scenario Simulator", "Run S1–S5 with full IO×CGE×ABM"),
         ("🏛️ Policy Analysis",   "Compare P1–P5 interventions"),
         ("✅ Validation",         "Model validation vs HMRC benchmarks"),
+        ("📋 All Scenarios",      "Cross-scenario comparison table"),
     ]
     row1, row2 = nav_items[:3], nav_items[3:]
     cols1 = st.columns(3)
@@ -454,8 +451,10 @@ elif page == "📊 Baseline Analysis":
         model    = _model()
         baseline = _baseline(model)
 
-    tab_hhi, tab_china, tab_mult, tab_score = st.tabs(
-        ["📊 HHI Concentration","🇨🇳 China Dependency","⚙️ IO Multipliers","🛡️ Resilience Scorecard"])
+    tab_hhi, tab_china, tab_mult, tab_score, tab_mrio, tab_ghosh = st.tabs([
+        "📊 HHI Concentration", "🇨🇳 China Dependency", "⚙️ IO Multipliers",
+        "🛡️ Resilience Scorecard", "🌍 MRIO Analysis", "🔄 Ghosh Supply-Push",
+    ])
 
     with tab_hhi:
         hhi = baseline["hhi"]
@@ -547,251 +546,198 @@ elif page == "📊 Baseline Analysis":
                                legend=dict(orientation="h",y=-0.15))
             st.plotly_chart(fig_r, use_container_width=True)
 
+    with tab_mrio:
+        st.subheader("Multi-Regional Input-Output Analysis")
+        st.caption("8 regions × 8 sectors = 64-node system | Calibrated from GTAP v10 + HMRC OTS")
+        with st.spinner("Building MRIO model…"):
+            mrio = _mrio()
+            from mrio_model import REGIONS, REGION_LABELS
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MRIO ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════════
-elif page == "🌍 MRIO Analysis":
-    st.title("Multi-Regional Input-Output Analysis")
-    st.caption("8 regions × 8 sectors = 64-node system | Calibrated from GTAP v10 + HMRC OTS")
+        mrio_va, mrio_exp, mrio_link, mrio_shock = st.tabs(
+            ["💰 Value-Added", "🇨🇳 China Exposure", "🔗 Linkages", "⚡ Regional Shock"])
 
-    with st.spinner("Building MRIO model…"):
-        mrio = _mrio()
-        from mrio_model import REGIONS, REGION_LABELS
+        with mrio_va:
+            detail, summary = mrio.value_added_decomposition()
+            ca,cb = st.columns([2,3])
+            with ca:
+                st.subheader("VA by Region (UK demand origin)")
+                fig_va = go.Figure(go.Pie(
+                    labels=summary["Region_Label"], values=summary["VA_GBP_bn"],
+                    hole=0.4, textinfo="label+percent",
+                    marker_colors=["#e63946","#2a9d8f","#457b9d","#f4a261",
+                                   "#264653","#7b1fa2","#1b5e20","#adb5bd"],
+                ))
+                fig_va.update_layout(height=380, template=DARK, showlegend=False)
+                st.plotly_chart(fig_va, use_container_width=True)
+            with cb:
+                st.subheader("Value-Added Heatmap (Region × Sector)")
+                pivot = detail.pivot_table(values="Value_Added_GBP", index="Region_Label",
+                                           columns="Sector", aggfunc="sum", fill_value=0)
+                fig_hm = px.imshow(pivot/1e9, template=DARK, height=380,
+                                   color_continuous_scale="Blues",
+                                   labels={"color":"VA £bn"}, text_auto=".2f")
+                fig_hm.update_xaxes(tickangle=-45)
+                st.plotly_chart(fig_hm, use_container_width=True)
+            st.subheader("Region Summary")
+            st.dataframe(summary[["Region_Label","VA_GBP_bn","VA_Share_%"]],
+                        use_container_width=True, hide_index=True)
 
-    tab_va, tab_exp, tab_link, tab_shock = st.tabs(
-        ["💰 Value-Added","🇨🇳 China Exposure","🔗 Linkages","⚡ Regional Shock"])
+        with mrio_exp:
+            exp = mrio.effective_china_exposure()
+            st.subheader("China Exposure by Supply Chain Stage")
+            if isinstance(exp, pd.DataFrame):
+                st.dataframe(exp, use_container_width=True, hide_index=True, height=300)
+                val_col = "MRIO_China_%" if "MRIO_China_%" in exp.columns else (
+                          "Effective_China_%" if "Effective_China_%" in exp.columns else None)
+                if val_col:
+                    fig_exp = px.bar(exp.sort_values(val_col, ascending=False),
+                                   x="Sector", y=val_col, template=DARK, height=300,
+                                   color=val_col, color_continuous_scale="Reds",
+                                   title="MRIO China Exposure by Stage (%)")
+                    fig_exp.update_layout(xaxis_tickangle=-45, coloraxis_showscale=False)
+                    st.plotly_chart(fig_exp, use_container_width=True)
 
-    with tab_va:
-        detail, summary = mrio.value_added_decomposition()
+        with mrio_link:
+            fwd = mrio.forward_linkages()
+            bwd = mrio.backward_linkages()
+            st.subheader("Top 15 — Forward Linkages (supply-critical region-sectors)")
+            st.dataframe(fwd.head(15), use_container_width=True, hide_index=True)
+            st.subheader("Top 15 — Backward Linkages (demand-critical)")
+            st.dataframe(bwd.head(15), use_container_width=True, hide_index=True)
 
-        ca,cb = st.columns([2,3])
-        with ca:
-            st.subheader("VA by Region (UK demand origin)")
-            fig_va = go.Figure(go.Pie(
-                labels=summary["Region_Label"], values=summary["VA_GBP_bn"],
-                hole=0.4, textinfo="label+percent",
-                marker_color=["#e63946","#2a9d8f","#457b9d","#f4a261",
-                              "#264653","#7b1fa2","#1b5e20","#adb5bd"],
-            ))
-            fig_va.update_layout(height=380, template=DARK, showlegend=False)
-            st.plotly_chart(fig_va, use_container_width=True)
+        with mrio_shock:
+            st.subheader("Interactive Regional Shock")
+            sc1,sc2,sc3 = st.columns(3)
+            shock_region = sc1.selectbox("Shock region", REGIONS,
+                                         format_func=lambda r: REGION_LABELS[r],
+                                         key="mrio_reg")
+            shock_sector = sc2.selectbox("Shock sector", SECTORS,
+                                         format_func=lambda s: SECTOR_SHORT.get(s,s),
+                                         key="mrio_sec")
+            shock_sev    = sc3.slider("Severity (%)", 5, 100, 50, key="mrio_sev")
+            if st.button("▶ Run Regional Shock", type="primary", key="mrio_run"):
+                with st.spinner("Running MRIO shock…"):
+                    from mrio_model import flat, REGION_IDX, SECTOR_IDX
+                    x_base    = mrio.gross_output()
+                    A_shocked = mrio.A_mrio.copy()
+                    r_idx = REGION_IDX[shock_region]
+                    s_idx = SECTOR_IDX[shock_sector]
+                    for j in range(mrio.A_mrio.shape[1]):
+                        A_shocked[r_idx*8+s_idx, j] *= (1 - shock_sev/100)
+                    from numpy.linalg import inv
+                    L_sh = inv(np.eye(mrio.A_mrio.shape[0]) - A_shocked)
+                    x_sh = L_sh @ mrio.uk_final_demand()
+                    rows = []
+                    for si, sec in enumerate(SECTORS):
+                        tb = sum(x_base[ri*8+si] for ri in range(8))
+                        ts = sum(x_sh[ri*8+si]   for ri in range(8))
+                        rows.append({"Sector":SECTOR_SHORT.get(sec,sec),
+                                     "Baseline":tb,"Shocked":ts,
+                                     "Change_%":(ts-tb)/(tb+1e-12)*100})
+                    df_sh = pd.DataFrame(rows)
+                fig_sh = go.Figure()
+                fig_sh.add_trace(go.Bar(x=df_sh["Sector"],y=df_sh["Baseline"],
+                                       name="Baseline",marker_color="#457b9d"))
+                fig_sh.add_trace(go.Bar(x=df_sh["Sector"],y=df_sh["Shocked"],
+                                       name="Shocked",marker_color="#e63946",opacity=0.85))
+                fig_sh.update_layout(barmode="group", height=360, template=DARK,
+                                    yaxis_title="Gross output (normalised)",
+                                    title=f"MRIO Shock: {REGION_LABELS[shock_region]} {shock_sector} −{shock_sev}%")
+                st.plotly_chart(fig_sh, use_container_width=True)
+                fig_chg = go.Figure(go.Bar(
+                    x=df_sh["Sector"], y=df_sh["Change_%"],
+                    marker_color=["#e63946" if v<0 else "#2a9d8f" for v in df_sh["Change_%"]],
+                    text=[f"{v:.1f}%" for v in df_sh["Change_%"]], textposition="outside",
+                ))
+                fig_chg.update_layout(height=280, template=DARK, yaxis_title="% change")
+                st.plotly_chart(fig_chg, use_container_width=True)
 
-        with cb:
-            st.subheader("Value-Added Heatmap (Region × Sector)")
-            pivot = detail.pivot_table(values="Value_Added_GBP", index="Region_Label",
-                                       columns="Sector", aggfunc="sum", fill_value=0)
-            fig_hm = px.imshow(pivot/1e9, template=DARK, height=380,
-                               color_continuous_scale="Blues",
-                               labels={"color":"VA £bn"},
-                               text_auto=".2f")
-            fig_hm.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig_hm, use_container_width=True)
+    with tab_ghosh:
+        st.subheader("Ghosh Supply-Push Analysis")
+        st.caption("Forward propagation of primary input constraints through the supply chain")
+        with st.spinner("Building Ghosh model…"):
+            ghosh = _ghosh()
+            from ghosh_model import GHOSH_SCENARIOS
 
-        st.subheader("Region Summary")
-        st.dataframe(summary[["Region_Label","VA_GBP_bn","VA_Share_%"]],
-                    use_container_width=True, hide_index=True)
+        g_link, g_quad, g_sc = st.tabs(
+            ["📊 Forward Linkages", "🎯 4-Quadrant Map", "⚡ Supply Shock Scenarios"])
 
-    with tab_exp:
-        exp = mrio.effective_china_exposure()
-        st.subheader("China Exposure by Supply Chain Stage")
-        if isinstance(exp, pd.DataFrame):
-            st.dataframe(exp, use_container_width=True, hide_index=True, height=300)
+        with g_link:
+            fl = ghosh.forward_linkages()
+            ca,cb = st.columns(2)
+            with ca:
+                fig = px.bar(fl.sort_values("FL_Ghosh_Norm", ascending=True),
+                            x="FL_Ghosh_Norm", y="Sector", orientation="h",
+                            color="Supply_Critical",
+                            color_discrete_map={True:"#e63946", False:"#457b9d"},
+                            template=DARK, height=340,
+                            title="Ghosh Forward Linkage (normalised)",
+                            text="FL_Ghosh_Norm")
+                fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+                fig.add_vline(x=1.0, line_dash="dash", line_color="#94a3b8",
+                             annotation_text="Mean=1.0")
+                fig.update_layout(showlegend=False, margin=dict(l=0,r=0,t=40,b=0))
+                st.plotly_chart(fig, use_container_width=True)
+            with cb:
+                st.subheader("Value-Added by Stage (primary inputs)")
+                fig_gva = px.bar(fl.sort_values("Value_Added_GBP", ascending=False),
+                               x="Sector", y="Value_Added_GBP",
+                               color="Supply_Critical",
+                               color_discrete_map={True:"#e63946",False:"#2a9d8f"},
+                               template=DARK, height=340,
+                               title="Primary Inputs (£ — ONS GVA rates)")
+                fig_gva.update_layout(xaxis_tickangle=-45, showlegend=False)
+                st.plotly_chart(fig_gva, use_container_width=True)
+            st.dataframe(fl, use_container_width=True, hide_index=True)
 
-            val_col = "MRIO_China_%" if "MRIO_China_%" in exp.columns else (
-                      "Effective_China_%" if "Effective_China_%" in exp.columns else None)
-            if val_col:
-                fig_exp = px.bar(exp.sort_values(val_col, ascending=False),
-                               x="Sector", y=val_col,
-                               template=DARK, height=300,
-                               color=val_col, color_continuous_scale="Reds",
-                               title="MRIO China Exposure by Stage (%)")
-                fig_exp.update_layout(xaxis_tickangle=-45, coloraxis_showscale=False)
-                st.plotly_chart(fig_exp, use_container_width=True)
+        with g_quad:
+            lv = ghosh.leontief_vs_ghosh_linkages()
+            fig_q = px.scatter(lv, x="BL_Norm", y="FL_Norm",
+                              text="Sector", color="Key_Sector",
+                              color_discrete_map={True:"#e63946",False:"#457b9d"},
+                              template=DARK, height=450,
+                              title="Leontief vs Ghosh Linkages — 4-Quadrant Map",
+                              labels={"BL_Norm":"Backward Linkage (demand-pull, normalised)",
+                                      "FL_Norm":"Forward Linkage (supply-push, normalised)"})
+            fig_q.update_traces(textposition="top center", marker=dict(size=14))
+            fig_q.add_vline(x=1.0, line_dash="dash", line_color="#475569")
+            fig_q.add_hline(y=1.0, line_dash="dash", line_color="#475569")
+            for (tx,ty,label) in [(0.3,1.8,"Supply-push dominant"),
+                                   (1.8,1.8,"Structurally central"),
+                                   (0.3,0.3,"Peripheral"),
+                                   (1.8,0.3,"Demand-pull dominant")]:
+                fig_q.add_annotation(x=tx, y=ty, text=label, showarrow=False,
+                                   font=dict(color="#64748b",size=10))
+            st.plotly_chart(fig_q, use_container_width=True)
 
-        mrio_png = FIG_DIR / "fig09_mrio_china_exposure.png"
-        if mrio_png.exists():
-            st.image(str(mrio_png), use_container_width=True)
-
-    with tab_link:
-        fwd = mrio.forward_linkages()
-        bwd = mrio.backward_linkages()
-        st.subheader("Top 15 — Forward Linkages (supply-critical region-sectors)")
-        st.dataframe(fwd.head(15), use_container_width=True, hide_index=True)
-        st.subheader("Top 15 — Backward Linkages (demand-critical)")
-        st.dataframe(bwd.head(15), use_container_width=True, hide_index=True)
-
-        mrio_va_png = FIG_DIR / "fig08_mrio_va_heatmap.png"
-        if mrio_va_png.exists():
-            st.image(str(mrio_va_png), use_container_width=True)
-
-    with tab_shock:
-        st.subheader("Interactive Regional Shock")
-        sc1,sc2,sc3 = st.columns(3)
-        shock_region  = sc1.selectbox("Shock region", REGIONS,
-                                      format_func=lambda r: REGION_LABELS[r])
-        shock_sector  = sc2.selectbox("Shock sector", SECTORS,
-                                      format_func=lambda s: SECTOR_SHORT.get(s,s))
-        shock_sev     = sc3.slider("Severity (%)", 5, 100, 50)
-
-        if st.button("▶ Run Regional Shock", type="primary"):
-            with st.spinner("Running MRIO shock…"):
-                from mrio_model import flat, REGION_IDX, SECTOR_IDX
-                fd_shocked = mrio.uk_final_demand()
-                shock_idx  = flat(shock_region, shock_sector)
-                x_base     = mrio.gross_output()
-                fd_s       = fd_shocked.copy()
-                # Apply shock as reduction to the production flat index
-                fd_s_mod   = mrio.uk_final_demand()
-                A_shocked  = mrio.A_mrio.copy()
-                r_idx = REGION_IDX[shock_region]
-                s_idx = SECTOR_IDX[shock_sector]
-                for j in range(mrio.A_mrio.shape[1]):
-                    A_shocked[r_idx*8+s_idx, j] *= (1 - shock_sev/100)
-
-                from numpy.linalg import inv
-                import numpy as np
-                L_sh = inv(np.eye(mrio.A_mrio.shape[0]) - A_shocked)
-                x_sh = L_sh @ mrio.uk_final_demand()
-                pct  = (x_sh - x_base) / (x_base + 1e-12) * 100
-
-                # Aggregate by sector
-                rows = []
-                for si, sec in enumerate(SECTORS):
-                    total_base = sum(x_base[ri*8+si] for ri in range(8))
-                    total_sh   = sum(x_sh[ri*8+si]   for ri in range(8))
-                    rows.append({"Sector":SECTOR_SHORT.get(sec,sec),
-                                 "Baseline":total_base,"Shocked":total_sh,
-                                 "Change_%":(total_sh-total_base)/(total_base+1e-12)*100})
-                df_sh = pd.DataFrame(rows)
-
-            fig_sh = go.Figure()
-            fig_sh.add_trace(go.Bar(x=df_sh["Sector"],y=df_sh["Baseline"],name="Baseline",
-                                   marker_color="#457b9d"))
-            fig_sh.add_trace(go.Bar(x=df_sh["Sector"],y=df_sh["Shocked"],name="Shocked",
-                                   marker_color="#e63946",opacity=0.85))
-            fig_sh.update_layout(barmode="group", height=360, template=DARK,
-                                yaxis_title="Gross output (normalised)",
-                                title=f"MRIO Shock: {REGION_LABELS[shock_region]} {shock_sector} −{shock_sev}%")
-            st.plotly_chart(fig_sh, use_container_width=True)
-
-            fig_chg = go.Figure(go.Bar(
-                x=df_sh["Sector"], y=df_sh["Change_%"],
-                marker_color=["#e63946" if v<0 else "#2a9d8f" for v in df_sh["Change_%"]],
-                text=[f"{v:.1f}%" for v in df_sh["Change_%"]], textposition="outside",
-            ))
-            fig_chg.update_layout(height=280, template=DARK, yaxis_title="% change")
-            st.plotly_chart(fig_chg, use_container_width=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GHOSH SUPPLY-PUSH
-# ═══════════════════════════════════════════════════════════════════════════════
-elif page == "🔄 Ghosh Supply-Push":
-    st.title("Ghosh Supply-Push Analysis")
-    st.caption("Forward propagation of primary input constraints through the supply chain")
-
-    with st.spinner("Building Ghosh model…"):
-        ghosh = _ghosh()
-        from ghosh_model import GHOSH_SCENARIOS
-
-    tab_link, tab_quad, tab_sc = st.tabs(
-        ["📊 Forward Linkages","🎯 4-Quadrant Map","⚡ Supply Shock Scenarios"])
-
-    with tab_link:
-        fl = ghosh.forward_linkages()
-        ca,cb = st.columns(2)
-        with ca:
-            fig = px.bar(fl.sort_values("FL_Ghosh_Norm", ascending=True),
-                        x="FL_Ghosh_Norm", y="Sector", orientation="h",
-                        color="Supply_Critical",
-                        color_discrete_map={True:"#e63946", False:"#457b9d"},
-                        template=DARK, height=340,
-                        title="Ghosh Forward Linkage (normalised)",
-                        text="FL_Ghosh_Norm")
-            fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-            fig.add_vline(x=1.0, line_dash="dash", line_color="#94a3b8",
-                         annotation_text="Mean=1.0")
-            fig.update_layout(showlegend=False, margin=dict(l=0,r=0,t=40,b=0))
-            st.plotly_chart(fig, use_container_width=True)
-
-        with cb:
-            st.subheader("Value-Added by Stage (primary inputs)")
-            fig_va = px.bar(fl.sort_values("Value_Added_GBP", ascending=False),
-                           x="Sector", y="Value_Added_GBP",
-                           color="Supply_Critical",
-                           color_discrete_map={True:"#e63946",False:"#2a9d8f"},
-                           template=DARK, height=340,
-                           title="Primary Inputs (£ — ONS GVA rates)")
-            fig_va.update_layout(xaxis_tickangle=-45, showlegend=False)
-            st.plotly_chart(fig_va, use_container_width=True)
-
-        st.dataframe(fl, use_container_width=True, hide_index=True)
-
-    with tab_quad:
-        lv = ghosh.leontief_vs_ghosh_linkages()
-        fig_q = px.scatter(lv, x="BL_Norm", y="FL_Norm",
-                          text="Sector", color="Key_Sector",
-                          color_discrete_map={True:"#e63946",False:"#457b9d"},
-                          template=DARK, height=450,
-                          title="Leontief vs Ghosh Linkages — 4-Quadrant Map",
-                          labels={"BL_Norm":"Backward Linkage (demand-pull, normalised)",
-                                  "FL_Norm":"Forward Linkage (supply-push, normalised)"})
-        fig_q.update_traces(textposition="top center", marker=dict(size=14))
-        fig_q.add_vline(x=1.0, line_dash="dash", line_color="#475569")
-        fig_q.add_hline(y=1.0, line_dash="dash", line_color="#475569")
-        # Quadrant labels
-        for (tx,ty,label) in [(0.3,1.8,"Supply-push dominant"),
-                               (1.8,1.8,"Structurally central"),
-                               (0.3,0.3,"Peripheral"),
-                               (1.8,0.3,"Demand-pull dominant")]:
-            fig_q.add_annotation(x=tx, y=ty, text=label, showarrow=False,
-                               font=dict(color="#64748b",size=10))
-        st.plotly_chart(fig_q, use_container_width=True)
-
-        ghosh_png = FIG_DIR / "fig11_ghosh_linkage_quadrant.png"
-        if ghosh_png.exists():
-            with st.expander("View static figure"):
-                st.image(str(ghosh_png), use_container_width=True)
-
-    with tab_sc:
-        st.subheader("Ghosh Supply Shock Scenarios")
-        gs_sel = st.selectbox("Scenario", list(GHOSH_SCENARIOS.keys()),
-                             format_func=lambda k: f"{k}: {GHOSH_SCENARIOS[k]['name'][:55]}")
-        gs_sev = st.slider("Shock severity override (%)", 10, 100,
-                          int(list(GHOSH_SCENARIOS[gs_sel]["shocks"].values())[0]*100))
-
-        if st.button("▶ Run Ghosh Scenario", type="primary"):
-            with st.spinner("Running Ghosh scenario…"):
-                shocks = {k: gs_sev/100 for k in GHOSH_SCENARIOS[gs_sel]["shocks"]}
-                res_g  = ghosh.supply_shock(shocks)
-
-            pct = res_g["pct_change"]
-            fig_g = go.Figure()
-            fig_g.add_trace(go.Bar(
-                x=[SECTOR_SHORT.get(s,s) for s in SECTORS],
-                y=pct,
-                marker_color=["#e63946" if v<0 else "#2a9d8f" for v in pct],
-                text=[f"{v:.1f}%" for v in pct], textposition="outside",
-            ))
-            fig_g.update_layout(height=360, template=DARK,
-                               yaxis_title="% output change",
-                               title=f"{gs_sel}: {GHOSH_SCENARIOS[gs_sel]['name'][:60]}",
-                               margin=dict(l=0,r=0,t=50,b=0))
-            st.plotly_chart(fig_g, use_container_width=True)
-
-            loss = res_g["total_output_loss_gbp"]
-            st.metric("Total output loss", f"£{loss/1e9:.3f}bn")
-
-        # Compare all Ghosh scenarios
-        if st.button("📊 Compare All Ghosh Scenarios"):
-            with st.spinner("Running all Ghosh scenarios…"):
-                comp = ghosh.scenarios_comparison()
-            st.dataframe(comp, use_container_width=True)
-
-            ghosh_comp_png = FIG_DIR / "fig12_ghosh_scenarios.png"
-            if ghosh_comp_png.exists():
-                st.image(str(ghosh_comp_png), use_container_width=True)
+        with g_sc:
+            st.subheader("Ghosh Supply Shock Scenarios")
+            gs_sel = st.selectbox("Scenario", list(GHOSH_SCENARIOS.keys()),
+                                 format_func=lambda k: f"{k}: {GHOSH_SCENARIOS[k]['name'][:55]}",
+                                 key="ghosh_sel")
+            gs_sev = st.slider("Shock severity override (%)", 10, 100,
+                              int(list(GHOSH_SCENARIOS[gs_sel]["shocks"].values())[0]*100),
+                              key="ghosh_sev")
+            if st.button("▶ Run Ghosh Scenario", type="primary", key="ghosh_run"):
+                with st.spinner("Running Ghosh scenario…"):
+                    shocks = {k: gs_sev/100 for k in GHOSH_SCENARIOS[gs_sel]["shocks"]}
+                    res_g  = ghosh.supply_shock(shocks)
+                pct = res_g["pct_change"]
+                fig_g = go.Figure(go.Bar(
+                    x=[SECTOR_SHORT.get(s,s) for s in SECTORS], y=pct,
+                    marker_color=["#e63946" if v<0 else "#2a9d8f" for v in pct],
+                    text=[f"{v:.1f}%" for v in pct], textposition="outside",
+                ))
+                fig_g.update_layout(height=360, template=DARK,
+                                   yaxis_title="% output change",
+                                   title=f"{gs_sel}: {GHOSH_SCENARIOS[gs_sel]['name'][:60]}",
+                                   margin=dict(l=0,r=0,t=50,b=0))
+                st.plotly_chart(fig_g, use_container_width=True)
+                st.metric("Total output loss", f"£{res_g['total_output_loss_gbp']/1e9:.3f}bn")
+            if st.button("📊 Compare All Ghosh Scenarios", key="ghosh_comp"):
+                with st.spinner("Running all Ghosh scenarios…"):
+                    comp = ghosh.scenarios_comparison()
+                st.dataframe(comp, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
