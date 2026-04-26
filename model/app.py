@@ -1760,7 +1760,7 @@ elif page == "✅ Validation":
     with dq2:
         fig_dq = go.Figure(go.Pie(
             labels=dq["Category"], values=dq["Count"], hole=0.4,
-            marker_color=["#2a9d8f","#457b9d","#e9c46a","#264653","#e63946"],
+            marker_colors=["#2a9d8f","#457b9d","#e9c46a","#264653","#e63946"],
             textinfo="label+percent",
         ))
         fig_dq.update_layout(height=280, template=DARK, showlegend=False,
