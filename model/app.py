@@ -1082,7 +1082,7 @@ elif page == "📋 All Scenarios":
 
     with st.sidebar:
         st.divider()
-        T_all   = st.slider("Simulation weeks", 12, 78, 52, step=4, key="all_T")
+        T_all   = st.slider("Simulation weeks", 12, 78, 52, step=4, key="all_T_slider")
         run_all = st.button("▶ Run All Scenarios", type="primary", use_container_width=True)
 
     if run_all:
@@ -1094,7 +1094,7 @@ elif page == "📋 All Scenarios":
             all_results[key] = model.run_scenario(scenario, T=T_all, verbose=False)
         prog.progress(1.0, text="Done.")
         st.session_state["all_results"] = all_results
-        st.session_state["all_T"] = T_all
+        st.session_state["all_T_result"] = T_all
 
     results = st.session_state.get("all_results")
     if results is None:
