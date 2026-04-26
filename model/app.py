@@ -803,7 +803,7 @@ elif page == "⚡ Scenario Simulator":
     from shocks import ALL_SCENARIOS, build_cge_supply_array, build_io_shock_schedule
 
     # Maximum agents per sector = number of source countries in STAGE_GEOGRAPHY
-    _MAX_AGENTS = [6, 6, 5, 5, 5, 11, 2, 1]   # Oil, Chem, PTA, PET, Fab, Gar, Who, Ret
+    _MAX_AGENTS = [7, 6, 5, 5, 5, 11, 2, 1]   # Oil, Chem, PTA, PET, Fab, Gar, Who, Ret
 
     with st.sidebar:
         st.divider()
@@ -840,12 +840,16 @@ elif page == "⚡ Scenario Simulator":
         for i, sector in enumerate(SECTORS):
             max_ag = _MAX_AGENTS[i]
             default = min(3, max_ag)
-            n = st.slider(
-                SECTOR_SHORT[sector],
-                min_value=1, max_value=max_ag, value=default,
-                key=f"n_ag_{i}",
-                help=f"{sector}: up to {max_ag} source countries available.",
-            )
+            if max_ag > 1:
+                n = st.slider(
+                    SECTOR_SHORT[sector],
+                    min_value=1, max_value=max_ag, value=default,
+                    key=f"n_ag_{i}",
+                    help=f"{sector}: up to {max_ag} source countries available.",
+                )
+            else:
+                st.caption(f"{SECTOR_SHORT[sector]}: 1 (fixed)")
+                n = 1
             agent_counts.append(n)
 
         run_btn = st.button("▶ Run Simulation", type="primary", use_container_width=True)
@@ -1705,8 +1709,8 @@ elif page == "✅ Validation":
             )
 
             # CGE price bar for this event
-            prices = res.get("equilibrium_prices", np.ones(8))
-            pct    = [(p - 1) * 100 for p in prices]
+            # run_validation_event returns cge_price_pct (already in % form)
+            pct = list(res.get("cge_price_pct", np.zeros(8)))
             fig_ev = go.Figure(go.Bar(
                 x=[SECTOR_SHORT.get(s, s) for s in SECTORS], y=pct,
                 marker_color=["#e63946" if v > 5 else "#e9c46a" if v > 0 else "#2a9d8f"
@@ -1715,11 +1719,12 @@ elif page == "✅ Validation":
             ))
             # Mark sigma-override sectors
             if ev_obj.get("sigma_override"):
+                y_ann = max(pct) * 0.7 if max(pct) > 0 else 5.0
                 for sec, sigma in ev_obj["sigma_override"].items():
                     if sec in SECTORS:
                         fig_ev.add_annotation(
                             x=SECTOR_SHORT.get(sec, sec),
-                            y=max(pct) * 0.7,
+                            y=y_ann,
                             text=f"σ={sigma}",
                             showarrow=False,
                             font=dict(color="#e9c46a", size=10),
