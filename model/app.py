@@ -113,19 +113,26 @@ with st.sidebar:
     st.divider()
     with st.expander("ℹ️ Model components"):
         st.markdown("""
-**Demand-side**
-- Dynamic Leontief I-O
-- CGE price equilibrium
-- ABM Beer-Game agents
+**Shock simulation**
+- Dynamic Leontief I-O (8 sectors)
+- CGE Armington price equilibrium
+- ABM Beer-Game supply chain agents
 
-**Supply-side**
+**Structural analysis**
 - MRIO (8 regions × 8 sectors)
 - Ghosh forward propagation
 
-**Data**
-- HMRC OTS API 2002-2024
+**Policy interventions**
+- P1 Strategic Buffer Stockpile
+- P2 Import Diversification
+- P3 Emergency Recovery Investment
+- P4 Critical Reserve Release
+- P5 Integrated Resilience Package
+
+**Data sources**
+- HMRC OTS API 2002–2024
 - ONS IO Tables 2023
-- GTAP v10 elasticities
+- GTAP v10 Armington elasticities
         """)
 
 
@@ -172,23 +179,21 @@ if page == "🏠 Home":
         st.plotly_chart(fig, use_container_width=True)
 
     with col_r:
-        st.subheader("Supply Chain Resilience Grades")
-        grades = {"PTA_Production":"F","PET_Resin_Yarn":"D","Fabric_Weaving":"C",
-                  "UK_Wholesale":"C","UK_Retail":"C","Chemical_Processing":"C",
-                  "Garment_Assembly":"C","Oil_Extraction":"B"}
-        color_map = {"F":"#e63946","D":"#f4a261","C":"#e9c46a","B":"#2a9d8f","A":"#264653"}
-        df_g = pd.DataFrame({"Sector":list(grades.keys()),"Grade":list(grades.values())})
-        df_g["Color"] = df_g["Grade"].map(color_map)
-        df_g["Short"] = df_g["Sector"].map(SECTOR_SHORT)
+        st.subheader("Scenario Economic Impact")
+        sc_names  = ["S1 PTA\nShock", "S2 MEG\nDisrupt.", "S3 Trade\nRestrict.",
+                     "S4 Port\nClosure", "S5 Pandemic"]
+        sc_welfare = [-3.58, -0.40, -1.04, -0.95, -6.34]
+        sc_colors  = ["#e63946","#f4a261","#8e44ad","#457b9d","#c0392b"]
         fig2 = go.Figure(go.Bar(
-            x=df_g["Short"], y=[1]*8,
-            marker_color=df_g["Color"],
-            text=df_g["Grade"], textposition="inside",
-            textfont=dict(size=18, color="white", family="monospace"),
-            showlegend=False,
+            x=sc_names, y=sc_welfare,
+            marker_color=sc_colors,
+            text=[f"£{v:.2f}bn" for v in sc_welfare],
+            textposition="outside",
         ))
-        fig2.update_layout(height=300, template=DARK, yaxis_visible=False,
-                          margin=dict(l=0,r=0,t=10,b=0))
+        fig2.update_layout(height=300, template=DARK,
+                          yaxis_title="CGE Welfare Change (£bn)",
+                          margin=dict(l=0,r=0,t=10,b=40),
+                          yaxis=dict(range=[min(sc_welfare)*1.15, 0.3]))
         st.plotly_chart(fig2, use_container_width=True)
 
     st.divider()
@@ -432,11 +437,11 @@ elif page == "🗺️ Supply Chain Map":
 
     with tab_network:
         conc_png = FIG_DIR / "fig02_concentration_vulnerability.png"
-        sc_png   = FIG_DIR / "fig03_resilience_scorecard.png"
+        net_png2 = FIG_DIR / "fig01_supply_chain_network.png"
         if conc_png.exists():
-            st.image(str(conc_png), use_container_width=True)
-        if sc_png.exists():
-            st.image(str(sc_png), use_container_width=True)
+            st.image(str(conc_png), caption="Sector concentration & vulnerability", use_container_width=True)
+        if net_png2.exists():
+            st.image(str(net_png2), caption="I-O network — China dependency by stage", use_container_width=True)
         if not conc_png.exists():
             st.info("Go to **🖼️ Figure Gallery** to generate all figures.")
 
@@ -446,6 +451,7 @@ elif page == "🗺️ Supply Chain Map":
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "📊 Baseline Analysis":
     st.title("Baseline Supply Chain Analysis")
+    st.caption("HHI concentration · China dependency · I-O multipliers · MRIO value-added · Ghosh supply-push")
 
     with st.spinner("Loading model (~10 s first load)…"):
         model    = _model()
@@ -724,6 +730,7 @@ elif page == "📊 Baseline Analysis":
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "⚡ Scenario Simulator":
     st.title("Supply Chain Shock Simulator")
+    st.caption("5 scenarios · IO × CGE × ABM coupled simulation · Sequential, Per-period or Gauss-Seidel coupling")
 
     from shocks import ALL_SCENARIOS, build_cge_supply_array, build_io_shock_schedule
 
@@ -1069,6 +1076,7 @@ elif page == "⚡ Scenario Simulator":
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "📋 All Scenarios":
     st.title("All Scenarios — Comparison & Analysis")
+    st.caption("Run all 5 shock scenarios and compare welfare, price, shortage and recovery metrics side-by-side")
 
     from shocks import ALL_SCENARIOS
 
