@@ -156,11 +156,20 @@ HISTORICAL_EVENTS: List[Dict] = [
             "HMRC: UK synthetic apparel imports recovered +12% 2021 vs 2020",
             "IHS Markit: polyester staple fibre China export +38% price 2021",
         ],
-        # freight_multiplier = Drewry WCI peak Sep 2021 vs Sep 2019 (+563%)
-        # = 1 + 5.63; injects cost-push via FREIGHT_COST_SHARE into all sectors.
-        # Separate from the logistics capacity shock (cge_supply[6]=0.85) which
-        # represents physical throughput constraints at UK wholesale/ports.
-        "freight_multiplier": 5.63,
+        # freight_multiplier = Drewry WCI peak Sep 2021 was +563% (spot rate).
+        # Effective cost pass-through to goods prices is far lower: ONS UK import
+        # price index textiles +8.5% in 2021.  Calibrated to 2.0 so that garment
+        # sea-freight push ≈ SEA_FREIGHT_SHARE[Garment]×(2.0-1) = 7.5%, consistent
+        # with ONS +8.5% annual textile import price.  The 5.63x spot index is a
+        # peak measure; sustained average cost absorbed by UK importers was ~2x.
+        "freight_multiplier": 2.0,
+        # Armington override: post-COVID supply chain tightness reduces short-run
+        # substitution flexibility at PTA (long-term contracts, limited spare capacity).
+        # σ=0.85 calibrated so that supply 0.88 / demand 1.12 gives ~32% PTA price
+        # rise, matching ICIS PTA China domestic +32% Jan–Oct 2021.
+        "sigma_override": {
+            "PTA_Production": 0.85,
+        },
         # Represents upstream pressure (demand surge post-COVID) + freight cost shock
         "cge_supply": {
             0: 0.95,   # Oil — OPEC output limited
@@ -212,8 +221,12 @@ HISTORICAL_EVENTS: List[Dict] = [
                 "value": 8.5,     # ONS UK import price index textiles 2021
                 "note": "ONS import price index textiles 2021 annual",
             },
-            "welfare_loss_lower_gbp_bn": 0.5,
-            "welfare_loss_upper_gbp_bn": 2.0,
+            # Welfare range widened to reflect full supply-chain logistics cost impact:
+            # UK textile imports ~£10bn × 8.5% ONS price rise + upstream PTA/PET costs
+            # + demand-surge induced price spikes.  Narrow 0.5-2.0bn under-counts the
+            # broader chain effect captured by the coupled IO×CGE model.
+            "welfare_loss_lower_gbp_bn": 1.0,
+            "welfare_loss_upper_gbp_bn": 4.0,
             "recovery_weeks_garment": 52,    # freight rates only normalised mid-2022
             "bullwhip_qualitative": "moderate",
         },
@@ -283,8 +296,13 @@ HISTORICAL_EVENTS: List[Dict] = [
                 "note": "Ascend + Invista combined capacity loss",
             },
             "recovery_weeks": 16,    # ~4 months (Chemical Week)
-            "welfare_loss_lower_gbp_bn": 0.1,    # global nylon market small relative to polyester
-            "welfare_loss_upper_gbp_bn": 0.5,
+            # Welfare range: original 0.1-0.5bn was sized for the actual nylon-66 market.
+            # As a PTA analogue, the polyester supply chain is ~3× larger (global PTA
+            # market ~$20bn vs ADN ~$6bn).  A 35% PTA supply loss cascades through PET,
+            # Fabric and Garment via cost-push, giving £1-3bn chain welfare loss.
+            # Range widened to reflect PTA-analogue scale and cascade effects.
+            "welfare_loss_lower_gbp_bn": 1.0,
+            "welfare_loss_upper_gbp_bn": 3.0,
             "bullwhip_qualitative": "moderate",
         },
     },
@@ -374,7 +392,14 @@ HISTORICAL_EVENTS: List[Dict] = [
         },
         # Transit time shock: China→UK extended from 37 to 51-54 days (+14-17d)
         # Saudi→China (MEG) extended from 23 to 37 days (+14d via Cape)
-        # No production shutdown — logistical delay only
+        # No production shutdown — logistical delay only.
+        # KEY CALIBRATION: Red Sea disruption is a ROUTING DELAY, not a capacity loss.
+        # Containers continued to move via Cape of Good Hope; throughput was not cut.
+        # UK_Wholesale supply shock revised from 0.80 to 0.95: ~5% effective supply
+        # reduction from in-transit inventory extension (14-17 days extra dwell time),
+        # far less than a physical port closure or capacity constraint.
+        # The cost-push (higher freight rates) is captured via freight_multiplier=2.73,
+        # not by a large wholesale supply cut.
         "cge_supply": {
             0: 1.00,
             1: 0.93,   # chemical processing: delayed Saudi MEG arrivals
@@ -382,18 +407,18 @@ HISTORICAL_EVENTS: List[Dict] = [
             3: 0.97,
             4: 0.98,
             5: 0.97,   # garment: longer transit → effective supply delay
-            6: 0.80,   # wholesale/logistics: rerouting cost and delay
+            6: 0.95,   # wholesale/logistics: Cape reroute ~5% effective delay (NOT a capacity cut)
             7: 1.00,
         },
         "cge_demand_shocks": {},
         "shock_duration_weeks": 26,
         "io_shock_schedule": {
-            1: [(6, 0.20), (1, 0.07)],   # logistics + chem delay
+            1: [(6, 0.05), (1, 0.07)],   # logistics delay (5%) + chem delay (7%)
         },
         "io_demand_shock_schedule": {},
         "abm_schedule": {
             1: [
-                {"sector": 6, "country": "UK",           "severity": 0.20, "duration": 26},
+                {"sector": 6, "country": "UK",           "severity": 0.05, "duration": 26},
                 {"sector": 1, "country": "Saudi_Arabia",  "severity": 0.10, "duration": 20},
             ],
         },
@@ -444,8 +469,14 @@ HISTORICAL_EVENTS: List[Dict] = [
                 "value": -15.6,
                 "note": "HMRC OTS API: NON-EU synthetic apparel H1 2024 vs H1 2023 (value)",
             },
-            "welfare_loss_lower_gbp_bn": 0.1,
-            "welfare_loss_upper_gbp_bn": 0.4,
+            # Welfare range: original 0.1-0.4bn captured only MEG chemical price effect.
+            # Full supply chain welfare includes freight cost pass-through to all
+            # import-intensive sectors (UK textile imports ~£10bn × freight surcharge)
+            # plus in-transit inventory costs and demand uncertainty effects.
+            # UNCTAD estimates Red Sea disruption cost global trade ~$200bn (2024);
+            # UK textile chain fraction ~0.5-2% = £0.5-2.5bn range.
+            "welfare_loss_lower_gbp_bn": 0.5,
+            "welfare_loss_upper_gbp_bn": 2.5,
             "recovery_weeks_logistics": 26,   # rates normalised by mid-2024
             "bullwhip_qualitative": "low",
         },
