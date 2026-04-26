@@ -451,9 +451,9 @@ elif page == "📊 Baseline Analysis":
         model    = _model()
         baseline = _baseline(model)
 
-    tab_hhi, tab_china, tab_mult, tab_score, tab_mrio, tab_ghosh = st.tabs([
+    tab_hhi, tab_china, tab_mult, tab_mrio, tab_ghosh = st.tabs([
         "📊 HHI Concentration", "🇨🇳 China Dependency", "⚙️ IO Multipliers",
-        "🛡️ Resilience Scorecard", "🌍 MRIO Analysis", "🔄 Ghosh Supply-Push",
+        "🌍 MRIO Analysis", "🔄 Ghosh Supply-Push",
     ])
 
     with tab_hhi:
@@ -524,27 +524,6 @@ elif page == "📊 Baseline Analysis":
         if isinstance(calibration, pd.DataFrame):
             st.subheader("Calibration Report")
             st.dataframe(calibration, use_container_width=True, hide_index=True)
-
-    with tab_score:
-        sc = baseline["scorecard"]
-        if isinstance(sc, pd.DataFrame):
-            num_cols = [c for c in sc.columns if sc[c].dtype in [float,np.float64]]
-            st.dataframe(sc.style.background_gradient(cmap="RdYlGn", subset=num_cols),
-                        use_container_width=True, height=340)
-
-            # Radar chart of first 5 sectors
-            cats  = ["HHI_Score","Redundancy_Score","Substitution_Score",
-                     "Buffer_Score","China_Dep_Score"]
-            fig_r = go.Figure()
-            for _, row in sc.iterrows():
-                vals = [row[c] for c in cats] + [row[cats[0]]]
-                fig_r.add_trace(go.Scatterpolar(r=vals, theta=cats+[cats[0]],
-                                                name=SECTOR_SHORT.get(row["Sector"],row["Sector"]),
-                                                fill="toself", opacity=0.5))
-            fig_r.update_layout(height=420, template=DARK,
-                               polar=dict(radialaxis=dict(range=[0,1])),
-                               legend=dict(orientation="h",y=-0.15))
-            st.plotly_chart(fig_r, use_container_width=True)
 
     with tab_mrio:
         st.subheader("Multi-Regional Input-Output Analysis")
@@ -1828,7 +1807,6 @@ elif page == "🖼️ Figure Gallery":
             ("fig00_supply_chain_geography.png", "Geographic supply chain flow"),
             ("fig01_supply_chain_network.png",   "I-O network / China dependency"),
             ("fig02_concentration_vulnerability.png","Concentration & vulnerability"),
-            ("fig03_resilience_scorecard.png",   "Resilience scorecard"),
         ],
         "HMRC Import Data": [
             ("fig04_hmrc_import_trends.png",     "Annual import trends 2002-2024"),
