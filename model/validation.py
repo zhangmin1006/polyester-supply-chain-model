@@ -324,12 +324,18 @@ HISTORICAL_EVENTS: List[Dict] = [
         # downstream even with the brief physical supply shock quickly resolved.
         "commodity_prices": {"Oil_Extraction": 1.15},
         # A short but severe oil supply disruption that did NOT cascade to PTA/PET
-        # because recovery was rapid. Model should also show limited cascade.
+        # because recovery was rapid (2-3 weeks) and chemical producers held inventory.
+        # Bloomberg: MEG/PTA prices "largely unchanged" — no feedstock shortage.
+        # Chemical, PTA, PET supply fractions set to 1.00 (no direct production effect):
+        #   - Oil recovery in 2-3 weeks < Chemical safety stock of 3 weeks
+        #   - PTA/PET producers did not reprice during the brief disruption
+        # Previously 0.97/0.98/0.99 were speculative; removing them reduces cascade
+        # to near-zero, matching Bloomberg/IEA observations.
         "cge_supply": {
-            0: 0.946,  # 5.4% world oil supply offline
-            1: 0.97,   # minor chemical feedstock effect
-            2: 0.98,
-            3: 0.99,
+            0: 0.946,  # 5.4% world oil supply offline (EIA)
+            1: 1.00,   # Chemical: no direct effect — inventory buffered 2-week spike
+            2: 1.00,   # PTA: Bloomberg confirms no MEG/PTA price move
+            3: 1.00,   # PET: no direct effect
             4: 1.00,
             5: 1.00,
             6: 1.00,

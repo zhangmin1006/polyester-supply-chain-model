@@ -628,9 +628,22 @@ class CGEModel:
         # Use vectorised column dot-product: cost_push_j = A[:,j] · (P-1)
         # A is lower-triangular for this supply chain, so sequential order
         # gives the correct upstream-first propagation.
+        #
+        # Inventory-buffer damping on cost propagation: a downstream sector
+        # with safety stock covering the shock duration can absorb upstream
+        # cost increases from inventory rather than immediately re-pricing.
+        # Same buffer formula as Step 1: damp = 1 - 0.7 × buffer_fraction.
+        # For very short shocks (e.g. V4: 2 weeks) all downstream sectors
+        # have buffer_frac = 1.0, reducing cascade to ~30% of the raw push.
+        # For long shocks (≥ 26 weeks) buffer_frac ≈ 0, so damping is minimal
+        # and cost propagation behaves as before.
         P_propagated = P_partial.copy()
         for j in range(1, self.n):
             cost_push = float(A_BASE[:j, j] @ (P_partial[:j] - 1.0))
+            if cost_push > 0:
+                buf_j      = SAFETY_STOCK_WEEKS.get(SECTORS[j], 2.0)
+                buf_frac_j = min(1.0, buf_j / max(shock_duration_weeks, 1))
+                cost_push  = cost_push * (1.0 - 0.7 * buf_frac_j)
             P_propagated[j] = max(P_partial[j], 1.0 + cost_push)
 
         # ── Step 2b: freight cost pass-through from logistics price ──────────
